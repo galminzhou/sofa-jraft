@@ -30,6 +30,28 @@ import com.alipay.sofa.jraft.util.Endpoint;
 import com.alipay.sofa.jraft.util.Utils;
 
 /**
+ * 一个辅助编程框架类，方便地“组装”起一个 raft group 节点。
+ *
+ * 总结下上文描述的创建和启动一个 raft group 节点的主要阶段：
+ * 1.实现并创建状态机实例
+ * 2.创建并设置好 NodeOptions 实例，指定存储路径，如果是空白启动，指定初始节点列表配置。
+ * 3.创建 Node 实例，并使用 NodeOptions 初始化。
+ * 4.创建并启动 RpcServer ，提供节点之间的通讯服务。
+ *
+ * 如果完全交给应用来做会相对麻烦，因此 jraft 提供了一个辅助工具类 RaftGroupService 来帮助开发人员简化这个过程：
+ *      String groupId = "jraft";
+ *      PeerId serverId = JRaftUtils.getPeerId("localhost:8080");
+ *      NodeOptions nodeOptions = ... // 配置 node options
+ *
+ *      RaftGroupService cluster = new RaftGroupService(groupId, serverId, nodeOptions);
+ *      Node node = cluster.start();
+ *
+ *      // 使用 node 提交任务
+ *      Task task = ....
+ *      node.apply(task);
+ *
+ *
+ *
  * A framework to implement a raft group service.
  *
  * @author boyan (boyan@alibaba-inc.com)

@@ -30,6 +30,8 @@ import com.alipay.sofa.jraft.util.Describer;
 import com.alipay.sofa.jraft.util.ThreadId;
 
 /**
+ * 用于单个 RAFT Group 管理所有的 replicator，必要的权限检查和派发。
+ * Replicator：用于 leader 向 follower 复制日志，也就是 raft 中的 appendEntries 调用，包括心跳存活检查等。
  * Replicators in a raft group.
  *
  * @author boyan (boyan@alibaba-inc.com)

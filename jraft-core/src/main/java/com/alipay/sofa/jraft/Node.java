@@ -33,6 +33,26 @@ import com.alipay.sofa.jraft.option.RaftOptions;
 import com.alipay.sofa.jraft.util.Describer;
 
 /**
+ * Raft 节点 Node ： Node 接口表示一个 raft 的参与节点，
+ * 可以提交 task，以及查询 raft group 信息，比如当前状态、当前 leader/term 等；
+ * 他的角色可能是 leader、follower 或者 candidate，随着选举过程而转变。
+ *
+ * 创建一个 raft 节点可以通过 RaftServiceFactory.createRaftNode(String groupId, PeerId serverId) 静态方法，其中
+ * - groupId 该 raft 节点的 raft group Id。
+ * - serverId 该 raft 节点的 PeerId 。
+ *
+ * 创建后还需要初始化才可以使用，初始化调用 boolean init(NodeOptions opts) 方法，需要传入 NodeOptions 配置。
+ *
+ * NodeOptions 最重要的就是设置三个存储的路径，以及应用状态机实例，如果是第一次启动，还需要设置 initialConf 初始配置节点列表。
+ * 初始化创建的 Node:
+ *      NodeOptions opts = ...
+ *      Node node = RaftServiceFactory.createRaftNode(groupId, serverId);
+ *      if(!node.init(opts))
+ *          throw new IllegalStateException("启动 raft 节点失败，具体错误信息请参考日志。");
+ *
+ * 创建和初始化结合起来也可以直接用 createAndInitRaftNode 方法：
+ *      Node node = RaftServiceFactory.createAndInitRaftNode(groupId, serverId, nodeOpts);
+ *
  * A raft replica node.
  *
  * @author boyan (boyan@alibaba-inc.com)
@@ -42,6 +62,7 @@ import com.alipay.sofa.jraft.util.Describer;
 public interface Node extends Lifecycle<NodeOptions>, Describer {
 
     /**
+     * 获取当前 raft group 的 leader peerId，如果未知，返回 null。
      * Get the leader peer id for redirect, null if absent.
      */
     PeerId getLeaderId();
@@ -83,6 +104,7 @@ public interface Node extends Lifecycle<NodeOptions>, Describer {
     boolean isLeader(final boolean blocking);
 
     /**
+     * 停止一个 raft 节点
      * Shutdown local replica node.
      *
      * @param done callback
@@ -90,6 +112,7 @@ public interface Node extends Lifecycle<NodeOptions>, Describer {
     void shutdown(final Closure done);
 
     /**
+     * 在 shutdown 调用后等待停止过程结束
      * Block the thread until the node is successfully stopped.
      *
      * @throws InterruptedException if the current thread is interrupted
@@ -98,6 +121,10 @@ public interface Node extends Lifecycle<NodeOptions>, Describer {
     void join() throws InterruptedException;
 
     /**
+     * 提交一个新任务到 raft group，此方法是线程安全并且非阻塞，
+     * 无论任务是否成功提交到 raft group，都会通过 task 关联的 closure done 通知到。
+     * 如果当前节点不是 leader，会直接失败通知 done closure。
+     *
      * [Thread-safe and wait-free]
      *
      * Apply task to the replicated-state-machine
@@ -247,6 +274,8 @@ public interface Node extends Lifecycle<NodeOptions>, Describer {
     void resetLearners(final List<PeerId> learners, final Closure done);
 
     /**
+     * 触发当前节点执行一次 snapshot 保存操作，结果通过 done 通知
+     *
      * Start a snapshot immediately if possible. done.run() would be invoked when
      * the snapshot finishes, describing the detailed result.
      *

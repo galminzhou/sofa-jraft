@@ -103,6 +103,11 @@ public class AtomicRangeGroup {
 
     }
 
+    /**
+     * [SSS- KV 存储实现线性一致读]
+     * @param key
+     * @param asyncContext
+     */
     public void readFromQuorum(final String key, RpcContext asyncContext) {
         final byte[] reqContext = new byte[4];
         Bits.putInt(reqContext, 0, requestId.incrementAndGet());

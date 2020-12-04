@@ -32,6 +32,22 @@ import com.alipay.sofa.jraft.util.Copiable;
 //
 //Since failed status needs to allocate memory, you should be careful when
 //failed status is frequent.
+
+/**
+ * 结果通过 Status 告知，Status#isOk() 告诉你成功还是失败，错误码和错误信息可以通过另外两个方法获取：
+ *      boolean success= status.isOk();
+ *      RaftError error = status.getRaftError(); // 错误码，RaftError 是一个枚举类
+ *      String errMsg = status.getErrorMsg(); // 获取错误详情
+ *
+ *
+ * Status 提供了一些方法来方便地创建：
+ *      // 创建一个成功的状态
+ *      Status ok = Status.OK();
+ *      // 创建一个失败的错误，错误信息支持字符串模板
+ *      String filePath = "/tmp/test";
+ *      Status status = new Status(RaftError.EIO, "Fail to read file from %s", filePath);
+ *
+ */
 public class Status implements Copiable<Status> {
 
     /**

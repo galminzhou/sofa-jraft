@@ -19,6 +19,13 @@ package com.alipay.sofa.jraft.util;
 import java.io.Serializable;
 
 /**
+ * 表示一个服务地址，包括 IP 和端口，raft 节点不允许启动在 0.0.0.0 所有的 IPv4 上，需要明确指定启动的 IP地址。
+ * 创建一个地址，绑定在 localhost 的 8080 端口上，如下例：
+ *   Endpoint addr = new Endpoint("localhost", 8080);
+ *   String s = addr.toString(); // 结果为 localhost:8080
+ *   PeerId peer = new PeerId();
+ *   boolean success = peer.parse(s);  // 可以从字符串解析出地址，结果为 true
+ *
  * A IP address with port.
  *
  * @author boyan (boyan@alibaba-inc.com)

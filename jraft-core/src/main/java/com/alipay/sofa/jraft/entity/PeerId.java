@@ -30,6 +30,19 @@ import com.alipay.sofa.jraft.util.Endpoint;
 import com.alipay.sofa.jraft.util.Utils;
 
 /**
+ * 表示一个 raft 协议的参与者（leader/follower/candidate etc.)，
+ * 它由三元素组成： ip:port:index， IP 就是节点的 IP， port 就是端口，
+ * index 表示同一个端口的序列号，目前没有用到，总被认为是 0。
+ * 预留此字段是为了支持同一个端口启动不同的 raft 节点，通过 index 区分。
+ *
+ * 创建一个 PeerId, index 指定为 0， ip 和端口分别是 localhost 和 8080:
+ *      PeerId peer = new PeerId("localhost", 8080);
+ *      EndPoint addr = peer.getEndpoint(); // 获取节点地址
+ *      int index = peer.getIdx(); // 获取节点序号，目前一直为 0
+ *
+ *      String s = peer.toString(); // 结果为 localhost:8080
+ *      boolean success = peer.parse(s);  // 可以从字符串解析出 PeerId，结果为 true
+ *
  * Represent a participant in a replicating group.
  *
  * @author boyan (boyan@alibaba-inc.com)

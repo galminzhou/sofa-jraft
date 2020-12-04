@@ -34,6 +34,12 @@ import com.alipay.sofa.jraft.util.ThreadPoolUtil;
 import com.alipay.sofa.jraft.util.timer.RaftTimerFactory;
 
 /**
+ * 工具类，为了方便创建 Endpoint/PeerId/Configuration 等对象， jraft 提供了 JRaftUtils 来快捷地从字符串创建出所需要的对象：
+ *      Endpoint addr = JRaftUtils.getEndpoint("localhost:8080");
+ *      PeerId peer = JRaftUtils.getPeerId("localhost:8080");
+ *      // 三个节点组成的 raft group 配置，注意节点之间用逗号隔开
+ *      Configuration conf = JRaftUtils.getConfiguration("localhost:8081,localhost:8082,localhost:8083");
+ *
  * Some helper methods for jraft usage.
  *
  * @author boyan (boyan@alibaba-inc.com)

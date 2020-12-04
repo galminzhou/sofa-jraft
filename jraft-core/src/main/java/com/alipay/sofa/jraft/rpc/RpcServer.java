@@ -20,7 +20,9 @@ import com.alipay.sofa.jraft.Lifecycle;
 import com.alipay.sofa.jraft.rpc.impl.ConnectionClosedEventListener;
 
 /**
- *
+ * RPC 模块用于节点之间的网络通讯:
+ * 1. RPC Server: 内置于 Node 内的 RPC 服务器，接收其他节点或者客户端发过来的请求，转交给对应服务处理。
+ * 2. RPC Client: 用于向其他节点发起请求，例如投票、复制日志、心跳等。
  * @author jiachun.fjc
  */
 public interface RpcServer extends Lifecycle<Void> {

@@ -32,6 +32,41 @@ import com.alipay.sofa.jraft.util.Utils;
 import com.alipay.sofa.jraft.util.concurrent.ConcurrentHashSet;
 
 /**
+ * 单纯一个 raft node 是没有什么用，测试可以是单个节点，
+ * 但是正常情况下一个 raft grup 至少应该是三个节点，如果考虑到异地多机房容灾，应该扩展到5个节点。（7 ～ 11）
+ *
+ * 节点之间的通讯使用 bolt 框架的 RPC 服务。
+ *
+ * 首先，创建节点后，需要将节点地址加入到 NodeManager:
+ *      NodeManager.getInstance().addAddress(serverId.getEndpoint());
+ *
+ * NodeManager 的 address 集合表示本进程提供的 RPC 服务地址列表。
+ * 其次，创建 Raft 专用的 RPCServer，内部内置了一套处理内部节点之间交互协议的 processor：
+ *      RPCServer rpcServer = RaftRpcServerFactory.createRaftRpcServer(serverId.getEndPoint());
+ *      // 启动 RPC 服务
+ *      rpcServer.init(null);
+ *
+ * 上述创建和 start 两个步骤可以合并为一个调用：
+ *      RPCServer rpcServer = RaftRpcServerFactory.createAndStartRaftRpcServer(serverId.getEndPoint());
+ * 这样就是为了本节点提供 RPC Server 服务，其他节点可以连接本节点进行通讯，比如发起选举、心跳和复制等。
+ *
+ * 但是大部分应用的服务端也会同时提供 RPC 服务给用户使用，
+ * jraft 允许 raft 节点使用业务提供的 RPCServer 对象，
+ * 也就是和业务共用同一个服务端口，这就需要为业务的 RPCServer 注册 raft 特有的通讯协议处理器：
+ *      RpcServer rpcServer = ... // 业务的 RPCServer 对象
+ *      ...注册业务的处理器...
+ *      // 注册 Raft 内部协议处理器
+ *      RaftRpcServerFactory.addRaftRequestProcessors(rpcServer);
+ *      // 启动，共用了端口
+ *      rpcServer.init(null);
+ *
+ * 同样，应用服务器节点之间可能需要一些业务通讯，会使用到 bolt 的 RpcClient，你也可以直接使用 jraft 内部的 rpcClient:
+ *      RpcClient rpcClient = ((AbstractBoltClientService) (((NodeImpl) node).getRpcService())).getRpcClient();
+ *
+ * 这样可以做到一些资源复用，减少消耗，代价就是依赖了 jraft 的内部实现和缺少一些可自定义配置。
+ *
+ * 节点配置变更可以通过 CliService，也可以通过 Leader 节点 Node 的系列方法来变更，实质上 CliService 都是转发到 leader 节点执行。
+ *
  * Raft nodes manager.
  *
  * @author boyan (boyan@alibaba-inc.com)

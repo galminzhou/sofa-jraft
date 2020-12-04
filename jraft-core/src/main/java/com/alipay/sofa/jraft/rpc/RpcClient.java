@@ -23,6 +23,14 @@ import com.alipay.sofa.jraft.option.RpcOptions;
 import com.alipay.sofa.jraft.util.Endpoint;
 
 /**
+ * RPC 模块用于节点之间的网络通讯:
+ * 1. RPC Server: 内置于 Node 内的 RPC 服务器，接收其他节点或者客户端发过来的请求，转交给对应服务处理。
+ * 2. RPC Client: 用于向其他节点发起请求，例如投票、复制日志、心跳等。
+ *
+ * 客户端的通讯层都依赖 Bolt 的 RpcClient，封装在 CliClientService 接口中，实现类就是 BoltCliClientService 。
+ * 可以通过 BoltCliClientService 的 getRpcClient 方法获取底层的 bolt RpcClient 实例，用于其他通讯用途，做到资源复用。
+ *
+ * RouteTable 更新 leader 信息同样需要传入 CliClientService 实例，用户应该尽量复用这些底层通讯组件，而非重复创建用。
  *
  * @author jiachun.fjc
  */

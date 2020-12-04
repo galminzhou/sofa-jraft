@@ -17,6 +17,8 @@
 package com.alipay.sofa.jraft;
 
 /**
+ * Closure 就是一个简单的 callback 接口， jraft 提供的大部分方法都是异步的回调模式，结果通过此接口通知。
+ *
  * Callback closure.
  *
  * @author boyan (boyan@alibaba-inc.com)

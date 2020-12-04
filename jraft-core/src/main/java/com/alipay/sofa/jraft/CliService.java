@@ -25,6 +25,21 @@ import com.alipay.sofa.jraft.entity.PeerId;
 import com.alipay.sofa.jraft.option.CliOptions;
 
 /**
+ * CLI 服务就是 Client CommandLine Service，
+ * 是 jraft 在 raft group 节点提供的 RPC 服务中暴露了一系列用于管理 raft group 的服务接口，
+ * 例如增加节点、移除节点、改变节点配置列表、重置节点配置以及转移 leader 等功能。
+ *
+ * 使用例子，首先是创建 CliService 实例：
+ *      // 创建并初始化 CliService
+ *      CliService cliService = RaftServiceFactory.createAndInitCliService(new CliOptions());
+ *      // 使用CliService
+ *      Configuration conf = JRaftUtils.getConfiguration("localhost:8081,localhost:8082,localhost:8083");
+ *      Status status = cliService.addPeer("jraft_group", conf, new PeerId("localhost", 8083));
+ *      if(status.isOk()){
+ *          System.out.println("添加节点成功");
+ *      }
+ *
+ *
  * Client command-line service
  *
  * @author boyan (boyan@alibaba-inc.com)

@@ -39,6 +39,28 @@ import com.alipay.sofa.jraft.util.Requires;
 import com.google.protobuf.Message;
 
 /**
+ * 路由表，用来维护到 raft group 的路由信息。
+ *
+ *      // 初始化 RPC 服务
+ *      CliClientService cliClientService = new BoltCliClientService();
+ *      cliClientService.init(new CliOptions());
+ *      // 获取路由表
+ *      RouteTable rt = RouteTable.getInstance();
+ *      // raft group 集群节点配置
+ *      Configuration conf =  JRaftUtils.getConfiguration("localhost:8081,localhost:8082,localhost:8083");
+ *      // 更新路由表配置
+ *      rt.updateConfiguration("jraft_test", conf);
+ *      // 刷新 leader 信息，超时 10 秒，返回成功或者失败
+ *      boolean success = rt.refreshLeader(cliClientService, "jraft_test", 10000).isOk();
+ *      if(success){
+ *          // 获取集群 leader 节点，未知则为 null
+ *          PeerId leader = rt.selectLeader("jraft_test");
+ *      }
+ *
+ * 应用如果需要向 leader 提交任务或者必须向 leader 查询最新数据，
+ * 就需要定期调用 refreshLeader 更新路由信息，
+ * 或者在服务端返回 redirect 重定向信息（自定义协议，参见 counter 例子）的情况下主动更新 leader 信息。
+ *
  * Maintain routes to raft groups.
  *
  * @author boyan (boyan@alibaba-inc.com)

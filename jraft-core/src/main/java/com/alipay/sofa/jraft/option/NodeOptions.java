@@ -38,26 +38,41 @@ public class NodeOptions extends RpcOptions implements Copiable<NodeOptions> {
     public static final JRaftServiceFactory defaultServiceFactory  = JRaftServiceLoader.load(JRaftServiceFactory.class) //
                                                                        .first();
 
+
     // A follower would become a candidate if it doesn't receive any message
     // from the leader in |election_timeout_ms| milliseconds
     // Default: 1000 (1s)
+    /**
+     * 一个 follower 当超过这个设定时间没有收到 leader 的消息后，变成 candidate 节点的时间；
+     * leader 会在 electionTimeoutMs 时间内向 follower 发消息（心跳或者复制日志），
+     * 如果没有收到， follower 就需要进入 candidate状态，发起选举或者等待新的 leader 出现，默认1秒。
+     */
     private int                             electionTimeoutMs      = 1000;                                         // follower to candidate timeout
 
     // One node's local priority value would be set to | electionPriority |
     // value when it starts up.If this value is set to 0,the node will never be a leader.
     // If this node doesn't support priority election,then set this value to -1.
     // Default: -1
+    /**
+     * 在Election Timeout期间，节点参与选举的优先级，Disabled 表示该节点默认禁用优先级选举功能
+     */
     private int                             electionPriority       = ElectionPriority.Disabled;
 
     // If next leader is not elected until next election timeout, it exponentially
     // decay its local target priority, for example target_priority = target_priority - gap
     // Default: 10
+    /**
+     * 在Election Timeout期间，对于设置了选举Leader优先级的情况下，每次衰减的最小值；
+     */
     private int                             decayPriorityGap       = 10;
 
     // Leader lease time's ratio of electionTimeoutMs,
     // To minimize the effects of clock drift, we should make that:
     // clockDrift + leaderLeaseTimeoutMs < electionTimeout
     // Default: 90, Max: 100
+    /**
+     * 为了使时钟漂移的影响最小化，应该使用:clockDrift + leaderLeaseTimeoutMs < electionTimeout
+     */
     private int                             leaderLeaseTimeRatio   = 90;
 
     // A snapshot saving would be triggered every |snapshot_interval_s| seconds
@@ -65,6 +80,9 @@ public class NodeOptions extends RpcOptions implements Copiable<NodeOptions> {
     // If |snapshot_interval_s| <= 0, the time based snapshot would be disabled.
     //
     // Default: 3600 (1 hour)
+    /**
+     * 自动 Snapshot 间隔时间，默认一个小时
+     */
     private int                             snapshotIntervalSecs   = 3600;
 
     // A snapshot saving would be triggered every |snapshot_interval_s| seconds,
@@ -74,6 +92,10 @@ public class NodeOptions extends RpcOptions implements Copiable<NodeOptions> {
     // If |snapshotLogIndexMargin| <= 0, the distance based snapshot would be disable.
     //
     // Default: 0
+    /**
+     * 若 snapshotLogIndexMargin <= 0，表示基于距离的快照将是禁用的；
+     * 若 当状态机的lastAppliedIndex值减去lastsnapsnapshotid值大于snapshotLogIndexMargin值时，快照工作就真正完成了。
+     */
     private int                             snapshotLogIndexMargin = 0;
 
     // We will regard a adding peer as caught up if the margin between the
@@ -81,6 +103,10 @@ public class NodeOptions extends RpcOptions implements Copiable<NodeOptions> {
     // |catchup_margin|
     //
     // Default: 1000
+    /**
+     * 若一个正在复制节点的last_log_index 和 leader的last_log_index差距少于catchupMargin，
+     * 则认为复制的节点已经复制完成，可正常工作了。
+     */
     private int                             catchupMargin          = 1000;
 
     // If node is starting from a empty environment (both LogStorage and
@@ -89,19 +115,35 @@ public class NodeOptions extends RpcOptions implements Copiable<NodeOptions> {
     // the existing environment.
     //
     // Default: A empty group
+    /**
+     * 当节点是从一个空白状态启动（snapshot和log存储都为空），
+     * 那么他会使用这个初始配置作为 raft group 的配置启动，否则会从存储中加载已有配置。
+     */
     private Configuration                   initialConf            = new Configuration();
 
     // The specific StateMachine implemented your business logic, which must be
     // a valid instance.
+    /**
+     * 最核心的，属于本 raft 节点的应用状态机实例。
+     */
     private StateMachine                    fsm;
 
     // Describe a specific LogStorage in format ${type}://${parameters}
+    /**
+     * Raft 节点的日志存储路径（必须）
+     */
     private String                          logUri;
 
     // Describe a specific RaftMetaStorage in format ${type}://${parameters}
+    /**
+     * Raft 节点的元信息存储路径（必须）
+     */
     private String                          raftMetaUri;
 
     // Describe a specific SnapshotStorage in format ${type}://${parameters}
+    /**
+     * Raft 节点的 snapshot 存储路径，可选，不提供就关闭了 snapshot 功能。
+     */
     private String                          snapshotUri;
 
     // If enable, we will filter duplicate files before copy remote snapshot,
@@ -116,6 +158,9 @@ public class NodeOptions extends RpcOptions implements Copiable<NodeOptions> {
 
     // If true, RPCs through raft_cli will be denied.
     // Default: false
+    /**
+     * 是否关闭 Cli 服务，默认不关闭
+     */
     private boolean                         disableCli             = false;
 
     /**
@@ -123,6 +168,8 @@ public class NodeOptions extends RpcOptions implements Copiable<NodeOptions> {
      */
     private boolean                         sharedTimerPool        = false;
     /**
+     * 内部定时线程池大小，默认按照 cpu 个数计算，需要根据应用实际情况适当调节。
+     *
      * Timer manager thread pool size
      */
     private int                             timerPoolSize          = Utils.cpus() * 3 > 20 ? 20 : Utils.cpus() * 3;
@@ -189,6 +236,8 @@ public class NodeOptions extends RpcOptions implements Copiable<NodeOptions> {
     }
 
     /**
+     * Raft 内部实现的一些配置信息，主要是性能相关。
+     *
      * Raft options
      */
     private RaftOptions raftOptions = new RaftOptions();

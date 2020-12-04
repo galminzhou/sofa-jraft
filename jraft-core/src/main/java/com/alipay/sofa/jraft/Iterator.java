@@ -19,6 +19,29 @@ package com.alipay.sofa.jraft;
 import java.nio.ByteBuffer;
 
 /**
+ * 提交的 task ，在 jraft 内部会做累积批量提交，应用到状态机的是一个 task 迭代器，
+ * 通过 com.alipay.sofa.jraft.Iterator 接口表示，一个典型的例子：
+ *
+ *      Iterator it = ....
+ *      //遍历迭代任务列表
+ *      while(it.hasNext()){
+ *          ByteBuffer data = it.getData(); // 获取当前任务数据
+ *          Closure done = it.done();  // 获取当前任务的 closure 回调
+ *          long index = it.getIndex();  // 获取任务的唯一日志编号，单调递增， jraft 自动分配
+ *          long term = it.getTerm();  // 获取任务的 leader term
+ *          ...逻辑处理...
+ *          it.next(); // 移到下一个task
+ *      }
+ * 注意， 如果 task 没有设置 closure，
+ * 那么 done 可能会是 null，另外在 follower 节点上， done 也是 null，
+ * 因为 done 不会被复制到除了 leader 节点之外的其他 raft 节点。
+ *
+ * 优化技巧，通常 leader 获取到的 done closure，可以扩展包装一个 closure 类 包含了没有序列化的用户请求，
+ * 那么在逻辑处理部分可以直接从 closure 获取到用户请求，无需通过 data 反序列化得到，减少了 leader 的 CPU 开销。
+ * 具体参考：Counter
+ *
+ *
+ *
  * Iterator over a batch of committed tasks.
  * @see StateMachine#onApply(Iterator)
  *

@@ -33,6 +33,16 @@ import com.alipay.sofa.jraft.util.Copiable;
 import com.alipay.sofa.jraft.util.Requires;
 
 /**
+ *  表示一个 raft group 的配置，也就是参与者列表：
+ *      PeerId peer1 = ...
+ *      PeerId peer2 = ...
+ *      PeerId peer3 = ...
+ *      // 由 3 个节点组成的 raft group
+ *      Configuration conf = new Configuration();
+ *      conf.addPeer(peer1);
+ *      conf.addPeer(peer2);
+ *      conf.addPeer(peer3);
+ *
  * A configuration with a set of peers.
  * @author boyan (boyan@alibaba-inc.com)
  *

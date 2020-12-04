@@ -25,6 +25,7 @@ import com.alipay.sofa.jraft.rpc.RpcRequests.RequestVoteRequest;
 import com.google.protobuf.Message;
 
 /**
+ * 预选举和选举的投票处理器
  * Handle PreVote and RequestVote requests.
  *
  * @author boyan (boyan@alibaba-inc.com)
@@ -50,9 +51,11 @@ public class RequestVoteRequestProcessor extends NodeRequestProcessor<RequestVot
     @Override
     public Message processRequest0(final RaftServerService service, final RequestVoteRequest request,
                                    final RpcRequestClosure done) {
+        // 预选举投票
         if (request.getPreVote()) {
             return service.handlePreVoteRequest(request);
         } else {
+            // 选举投票
             return service.handleRequestVoteRequest(request);
         }
     }

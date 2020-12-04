@@ -27,6 +27,22 @@ import com.alipay.sofa.jraft.Closure;
 import com.alipay.sofa.jraft.closure.JoinableClosure;
 
 /**
+ * Task 是用户使用 jraft 最核心的类之一，
+ * 用于向一个 raft 复制分组提交一个任务，这个任务提交到 leader，并复制到其他 follower 节点， Task 包括：
+ * - ByteBuffer data 任务的数据，用户应当将要复制的业务数据通过一定序列化方式（比如 java/hessian2) 序列化成一个 ByteBuffer，放到 task 里。
+ * - long expectedTerm = -1 任务提交时预期的 leader term，如果不提供(也就是默认值 -1 )，
+ *   在任务应用到状态机之前不会检查 leader 是否发生了变更，如果提供了（从状态机回调中获取，参见下文），
+ *   那么在将任务应用到状态机之前，会检查 term 是否匹配，如果不匹配将拒绝该任务。
+ * - Closure done 任务的回调，在任务完成的时候通知此对象，无论成功还是失败。
+ *   这个 closure 将在 StateMachine#onApply(iterator) 方法应用到状态机的时候，可以拿到并调用，一般用于客户端应答的返回。
+ * 创建一个简单 Task 实例：
+ *      Closure done = ...;
+ *      Task task = new Task();
+ *      task.setData(ByteBuffer.wrap("hello".getBytes());
+ *      task.setClosure(done);
+ *
+ * 任务的 closure 还可以使用特殊的 TaskClosure 接口，额外提供了一个 onCommitted 回调方法：
+ *
  * Basic message structure of jraft, contains:
  * <ul>
  * <li>data: associated  task data</li>

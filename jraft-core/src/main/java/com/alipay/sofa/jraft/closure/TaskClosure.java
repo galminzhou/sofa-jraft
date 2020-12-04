@@ -19,6 +19,9 @@ package com.alipay.sofa.jraft.closure;
 import com.alipay.sofa.jraft.Closure;
 
 /**
+ * 当 jraft 发现 task 的 done 是 TaskClosure 的时候，
+ * 会在 RAFT 日志提交到 RAFT group 之后（并复制到多数节点），应用到状态机之前调用 onCommitted 方法。
+ *
  * Closure for task applying.
  * @author dennis
  */

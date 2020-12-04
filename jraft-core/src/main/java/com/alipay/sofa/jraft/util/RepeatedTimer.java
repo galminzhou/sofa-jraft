@@ -40,7 +40,15 @@ public abstract class RepeatedTimer implements Describer {
     public static final Logger LOG  = LoggerFactory.getLogger(RepeatedTimer.class);
 
     private final Lock         lock = new ReentrantLock();
+    /**
+     * 实例Timer = HashedWheelTimer
+     * @Link com.alipay.sofa.jraft.util.timer.HashedWheelTimer
+     */
     private final Timer        timer;
+    /**
+     * 实例timeout = hashedWheelTimeout
+     * @Link com.alipay.sofa.jraft.util.timer.HashedWheelTimer.HashedWheelTimeout
+     */
     private Timeout            timeout;
     private boolean            stopped;
     private volatile boolean   running;
@@ -53,6 +61,12 @@ public abstract class RepeatedTimer implements Describer {
         return this.timeoutMs;
     }
 
+    /**
+     * 实例化一个timer，RepeatedTimer的run方法是由timer进行回调
+     * 在RepeatedTimer中会持有两个对象，一个是timer，一个是timeout
+     * @param name
+     * @param timeoutMs
+     */
     public RepeatedTimer(final String name, final int timeoutMs) {
         this(name, timeoutMs, new HashedWheelTimer(new NamedThreadFactory(name, true), 1, TimeUnit.MILLISECONDS, 2048));
     }
@@ -129,9 +143,11 @@ public abstract class RepeatedTimer implements Describer {
     }
 
     /**
+     * 启动方法的加锁、校验和赋值，目的只为了让start启动一次，而后调用schedule()
      * Start the timer.
      */
     public void start() {
+        // ReentrantLock lock, TODO【volatile + CAS】？
         this.lock.lock();
         try {
             if (this.destroyed) {
@@ -144,6 +160,7 @@ public abstract class RepeatedTimer implements Describer {
             if (this.running) {
                 return;
             }
+            // 启动一次之后失效，下次不允许执行
             this.running = true;
             schedule();
         } finally {
@@ -174,6 +191,7 @@ public abstract class RepeatedTimer implements Describer {
     }
 
     private void schedule() {
+        // 若Timeout不是Null，则调用HashedWheelTimeout的cancel方法（）
         if (this.timeout != null) {
             this.timeout.cancel();
         }
