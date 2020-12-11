@@ -38,6 +38,9 @@ import com.alipay.sofa.jraft.storage.snapshot.SnapshotWriter;
 import com.alipay.sofa.jraft.util.Utils;
 
 /**
+ * 状态机 CounterStateMachine
+ *
+ *
  * Counter state machine.
  *
  * @author boyan (boyan@alibaba-inc.com)
@@ -68,6 +71,9 @@ public class CounterStateMachine extends StateMachineAdapter {
         return this.value.get();
     }
 
+    /**
+     * 应用提交的请求到状态机（）
+     */
     @Override
     public void onApply(final Iterator iter) {
         while (iter.hasNext()) {
@@ -75,12 +81,15 @@ public class CounterStateMachine extends StateMachineAdapter {
             CounterOperation counterOperation = null;
 
             CounterClosure closure = null;
+            // done 不是 Null，表示是Leader节点，done 回调不是 Null，必须在应用日志之后调用；
             if (iter.done() != null) {
                 // This task is applied by this node, get value from closure to avoid additional parsing.
+                // 当前是Leader节点，可直接从 CounterClosure 中获取 delta，避免反序列化
                 closure = (CounterClosure) iter.done();
                 counterOperation = closure.getCounterOperation();
             } else {
                 // Have to parse FetchAddRequest from this user log.
+                // 其它节点应用此日志，需要反序列化 IncrementAndGetRequest 获取 delta
                 final ByteBuffer data = iter.getData();
                 try {
                     counterOperation = SerializerManager.getSerializer(SerializerManager.Hessian2).deserialize(
@@ -98,11 +107,13 @@ public class CounterStateMachine extends StateMachineAdapter {
                     case INCREMENT:
                         final long delta = counterOperation.getDelta();
                         final long prev = this.value.get();
+                        // 更新状态机
                         current = this.value.addAndGet(delta);
                         LOG.info("Added value={} by delta={} at logIndex={}", prev, delta, iter.getIndex());
                         break;
                 }
 
+                // 更新之后确保调用done，返回应答给客户端
                 if (closure != null) {
                     closure.success(current);
                     closure.run(Status.OK());

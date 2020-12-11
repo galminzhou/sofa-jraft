@@ -30,7 +30,7 @@ import com.alipay.sofa.jraft.rhea.util.Pair;
 import com.alipay.sofa.jraft.util.Endpoint;
 
 /**
- *
+ * 负责集群元信息存储以及查询，存储方面基于内嵌的 RheaKV。
  * @author jiachun.fjc
  */
 public interface MetadataStore {

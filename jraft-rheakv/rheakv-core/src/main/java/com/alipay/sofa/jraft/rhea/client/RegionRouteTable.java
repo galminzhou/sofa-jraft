@@ -36,6 +36,20 @@ import com.alipay.sofa.jraft.util.BytesUtil;
 import com.alipay.sofa.jraft.util.Requires;
 
 /**
+ * 实现下图最适合的数据结构便是跳表或者二叉树（最接近匹配项查询）；
+ * 选择 region 的 startKey 还是 endKey 作为 RegionRouteTable 的 key 也是有讲究的，
+ * 比如为什么没有使用endKey? 这主要取决于 region split 的方式：
+ *  1）假设 id 为 2 的 region2 [startKey2, endKey2) 分裂
+ *  2）它分裂后的两个 region 分别为 id 继续为 2 的 region2 [startKey2, splitKey) 和 id 为 3 的 region3 [splitKey, endKey2)
+ *  3）可以再看下图会发现，此时只需要再往 regionRouteTable 添加一个元素 <region3, splitKey> 即可，原来region2 对应的数据是不需要修改的
+ *      ⭕️ Write-Operation
+ *          a）单 key 写请求路由逻辑很简单，根据 key 查询对应的 region，再对该 region 发起请求即可。
+ *          b）如果是一个批量操作写请求，比如 put(List)，那么会对所有 keys 进行 split，
+ *            分组后再并行分别请求所属的regionEngine，要注意的是此时无法提供事务保证（提供retry）。
+ *      ⭕️ Read-Operation
+ *          a）单 key 读请求路由逻辑也很简单，根据 key 查询对应的 region，再对该 region 发起请求即可。
+ *          b）如果是一个批量读请求，比如 scan(startKey, endKey)，那么会对所有 keys 进行 split，分组后并行再分别请求所属的 regionEngine。
+ *
  * Region routing table.
  *
  * Enter a 'key' or a 'key range', which can calculate the region
@@ -239,6 +253,67 @@ public class RegionRouteTable {
     }
 
     /**
+     * 一次 scan 的流程
+     * 确定 key 区间 [startKey, endKey) 覆盖的 region list；
+     * RegionRouteTable 是一个红黑树结构存储的 region 路由表，
+     * startKey 为作为红黑树的key， 只要查找 [startKey, endKey) 的子视图再加上一个 floorEntry(startKey) 即可
+     * 如下图示例计算得出 [startKey, endKey) 横跨 region1, region2, region3 一共 3 个分区(region1 为 floor entry, region2 和 region3 为子视图部分)
+     *
+     *                   scan startKey                                       scan endKey
+     *                        │                                                  │
+     *                        │                                                  │
+     *                        │                                                  │
+     * ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─    │   ┌ ─ ─ ─ ─ ─ ─ ┐           ┌ ─ ─ ─ ─ ─ ─ ┐      │    ┌ ─ ─ ─ ─ ─ ─ ┐
+     *  startKey1=byte[0] │   │      startKey2                 startKey3         │       startKey4
+     * └ ─ ─ ─ ┬ ─ ─ ─ ─ ─    │   └ ─ ─ ─│─ ─ ─ ┘           └ ─ ─ ─│─ ─ ─ ┘      │    └ ─ ─ ─│─ ─ ─ ┘
+     *         │              │          │                         │             │           │
+     *         ▼──────────────▼──────────▼─────────────────────────▼─────────────▼───────────▼─────────────────────────┐
+     *         │                         │                         │                         │                         │
+     *         │                         │                         │                         │                         │
+     *         │         region1         │         region2         │          region3        │         region4         │
+     *         │                         │                         │                         │                         │
+     *         └─────────────────────────┴─────────────────────────┴─────────────────────────┴─────────────────────────┘
+     *
+     * 请求分裂: scan -> multi-region scan
+     *      region1 -> regionScan(startKey, regionEndKey1)
+     *      region2 -> regionScan(regionStartKey2, regionEndKey2)
+     *      region3 -> regionScan(regionStartKey3, endKey)
+     *
+     *                 ┌ ─ ─ ─ ─ ─ ─ ┐         ┌ ─ ─ ─ ─ ─ ─ ┐          ┌ ─ ─ ─ ─ ─ ─ ┐
+     *                  call region 1           call region 2            call region 3
+     *                 └ ─ ─ ─│─ ─ ─ ┘         └ ─ ─ ─│─ ─ ─ ┘          └ ─ ─ ─│─ ─ ─ ┘
+     *                        │                       │                        │
+     *                        │                       │                        │
+     *                        │                       │                        │
+     *         ▼──────────────▼──────────▼────────────▼────────────▼───────────▼─────────────▼─────────────────────────┐
+     *         │                         │                         │                         │                         │
+     *         │                         │                         │                         │                         │
+     *         │         region1         │         region2         │          region3        │         region4         │
+     *         │                         │                         │                         │                         │
+     *         └─────────────────────────┴─────────────────────────┴─────────────────────────┴─────────────────────────┘
+     *
+     * 遭遇 region split (分裂的标志是 region epoch 发生变化)
+     *      刷新 RegionRouteTable，需要从 PD 获取最新的路由表，比如当前示例中 region2 分裂变成了 region2 + region5
+     *          region2 -> regnonScan(regionStartKey2, regionEndKey2)  请求分裂并重试
+     *              region2 -> regionScan(regionStartKey2, newRegionEndKey2)
+     *              region5 -> regionScan(regionStartKey5, regionEndKey5)
+     *
+     *                 ┌ ─ ─ ─ ─ ─ ─ ┐         ┌ ─ ─ ─ ─ ─ ─ ┐               ┌ ─ ─ ─ ─ ─ ─ ┐
+     *                  call region 1           call region 2                 call region 3
+     *                 └ ─ ─ ─│─ ─ ─ ┘         └ ─ ─ ─│─ ─ ─ ┘               └ ─ ─ ─│─ ─ ─ ┘
+     *                        │                       │      call region5           │
+     *                        │                       │            │                │
+     *                        │                       │            │                │
+     *         ▼──────────────▼──────────▼────────────▼──────▼─────▼────▼───────────▼─────────────▼─────────────────────────┐
+     *         │                         │                   │          │                         │                         │
+     *         │                         │                   │          │                         │                         │
+     *         │         region1         │         region2   │ region5  │          region3        │         region4         │
+     *         │                         │                   │          │                         │                         │
+     *         └─────────────────────────┴───────────────────┴──────────┴─────────────────────────┴─────────────────────────┘
+     *
+     * 遭遇 Invalid Peer (NOT_LEADER 等错误)
+     *      这个就很简单了, 重新获取当前 key 区间所属的 raft-group 的最新 leader，再次发起调用即可
+     *
      * Returns the list of regions covered by startKey and endKey.
      */
     public List<Region> findRegionsByKeyRange(final byte[] startKey, final byte[] endKey) {

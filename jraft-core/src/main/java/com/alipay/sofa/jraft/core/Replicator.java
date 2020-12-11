@@ -72,6 +72,10 @@ import com.google.protobuf.Message;
 import com.google.protobuf.ZeroByteStringHelper;
 
 /**
+ * 复制日志是并发的，并且是批量的
+ * SOFAJRaft 中 Leader 节点会同时向多个 Follower 节点复制日志，
+ * 在 Leader 中为每一个 Follower 分配一个 Replicator，专用来处理复制日志任务。
+ *
  * Replicator for replicating log entry from leader to followers.
  * @author boyan (boyan@alibaba-inc.com)
  *
@@ -322,6 +326,10 @@ public class Replicator implements ThreadId.OnError {
     }
 
     /**
+     * 用 Inflight 来辅助实现 pipeline。
+     *
+     * Inflight 是对批量发送出去的 logEntry 的一种抽象，他表示哪些 logEntry 已经被封装成日志复制 request 发送出去了。
+     *
      * In-flight request.
      * @author dennis
      *
@@ -490,6 +498,9 @@ public class Replicator implements ThreadId.OnError {
     }
 
     /**
+     * [SSS-复制日志的主要方法]
+     * 添加 Inflight 到队列中
+     *
      * Adds a in-flight request
      * @param reqType   type of request
      * @param count     count if request
@@ -676,6 +687,7 @@ public class Replicator implements ThreadId.OnError {
     }
 
     /**
+     * [SSS-Raft日志复制 关注方法]
      * Send probe or heartbeat request
      * @param isHeartbeat      if current entries is heartbeat
      * @param heartBeatClosure heartbeat callback
@@ -1300,6 +1312,9 @@ public class Replicator implements ThreadId.OnError {
         releaseReader();
     }
 
+    /**
+     * [SSS-Raft日志复制 关注方法]
+     */
     private static boolean onAppendEntriesReturned(final ThreadId id, final Inflight inflight, final Status status,
                                                    final AppendEntriesRequest request,
                                                    final AppendEntriesResponse response, final long rpcSendTime,
@@ -1515,6 +1530,13 @@ public class Replicator implements ThreadId.OnError {
     }
 
     /**
+     * [SSS-Raft日志复制 关注方法]
+     *
+     * Leader 维护一个 queue，每发出一批 logEntry 就向 queue 中 添加一个代表这一批 logEntry 的 Inflight，
+     * 这样当它知道某一批 logEntry 复制失败之后，
+     * 就可以依赖 queue 中的 Inflight 把该批次 logEntry 以及后续的所有日志重新复制给 follower。
+     * 既保证日志复制能够完成，又保证了复制日志的顺序不变。
+     *
      * Send log entries to follower, returns true when success, otherwise false and unlock the id.
      *
      * @param nextSendingIndex next sending index

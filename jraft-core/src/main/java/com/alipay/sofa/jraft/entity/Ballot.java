@@ -22,6 +22,7 @@ import java.util.List;
 import com.alipay.sofa.jraft.conf.Configuration;
 
 /**
+ * 投票箱
  * A ballot to vote.
  *
  * @author boyan (boyan@alibaba-inc.com)

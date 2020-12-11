@@ -29,6 +29,27 @@ import com.alipay.sofa.jraft.storage.snapshot.SnapshotWriter;
  *
  * 业务逻辑实现的主要接口，状态机运行在每个 raft 节点上，提交的 task 如果成功，最终都会复制应用到每个节点的状态机上。
  *
+ * 什么是分布式一致性：
+ *      分布式一致性 (distributed consensus) 是分布式系统中最基本的问题，用来保证一个分布式系统的可靠性以及容灾能力。
+ *      简单的来讲，就是如何在多个机器间对某一个值达成一致, 并且当达成一致之后，无论之后这些机器间发生怎样的故障，这个值能保持不变。
+ *      抽象定义上， 一个分布式系统里的所有进程要确定一个值 v，如果这个系统满足如下几个性质， 就可以认为它解决了分布式一致性问题, 分别是:
+ *          Termination: 所有正常的进程都会决定 v 具体的值，不会出现一直在循环的进程。
+ *          Validity: 任何正常的进程确定的值 v’（例如：随机数生成器就不满足这个性质）, 那么 v’ 肯定是某个进程提交的。
+ *          Agreement: 所有正常的进程选择的值都是一样的。
+ *
+ * 什么是一致性状态机：
+ *      对于一个无限增长的序列 a[1, 2, 3…], 如果对于任意整数 i, a[i] 的值满足分布式一致性，这个系统就满足一致性状态机的要求。
+ *      基本上所有的系统都会有源源不断的操作, 这时候单独对某个特定的值达成一致是不够的。
+ *      为了真实系统保证所有的副本的一致性，通常会把操作转化为 write-ahead-log(简称WAL)。
+ *      然后让系统的所有副本对WAL保持一致，这样每个进程按照顺序执行WAL里的操作，就能保证最终的状态是一致的。
+ *
+ *  Write-Ahead-Log：
+ *      简称WAL，在分布式存储系统中的元数据更新中应用得十分广泛。
+ *      WAL的主要意思是说在将元数据的变更操作写入到持久稳定的db之前，先预先写入到一个log中，然后再由另外的操作将log apply到外部的持久db里去。
+ *      这种模式会减少掉每次的db写入操作，尤其当系统要处理大量的transaction操作的时候，WAL的方式相比较于实时同步db的方式有着更高的效率。
+ *
+ * WAL还有一点很重要的帮助是可以在disaster recovery过程中起到状态恢复的作用，系统在load完元数据db后，再把未来得及提交的WAL apply进来，就能恢复成和之前最终一致的状态。
+ *
  * |StateMachine| is the sink of all the events of a very raft node.
  * Implement a specific StateMachine for your own business logic.
  * NOTE: All the interfaces are not guaranteed to be thread safe and they are

@@ -100,8 +100,18 @@ public class CounterServer {
         return response;
     }
 
+    /**
+     * 示例（三个节点）
+     * /tmp/server1 counter 127.0.0.1:8081 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
+     * /tmp/server2 counter 127.0.0.1:8082 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
+     * /tmp/server3 counter 127.0.0.1:8083 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
+     *
+     * @param args
+     * @throws IOException
+     */
     public static void main(final String[] args) throws IOException {
         if (args.length != 4) {
+            //dataPath(/tmp/server1) groupId(raftGroup_counter) serverIp(127.0.0.1:8001)  config(127.0.0.1:8001,127.0.0.1:8002,127.0.0.1:8003)
             System.out
                 .println("Useage : java com.alipay.sofa.jraft.example.counter.CounterServer {dataPath} {groupId} {serverId} {initConf}");
             System.out
@@ -117,7 +127,7 @@ public class CounterServer {
         // 为了测试,调整 snapshot 间隔等参数
         // 设置选举超时时间为 1 秒
         nodeOptions.setElectionTimeoutMs(1000);
-        // 关闭 CLI 服务。
+        // 关闭 CLI 服务
         nodeOptions.setDisableCli(false);
         // 每隔30秒做一次 snapshot
         nodeOptions.setSnapshotIntervalSecs(30);

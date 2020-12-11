@@ -28,8 +28,16 @@ import com.alipay.sofa.jraft.option.CliOptions;
 import com.alipay.sofa.jraft.rpc.InvokeCallback;
 import com.alipay.sofa.jraft.rpc.impl.cli.CliClientServiceImpl;
 
+/**
+ * 主要使用 jraft 提供的 RouteTable 来刷新获取最新的 leader 节点，然后发送请求到 leader节点即可：
+ */
 public class CounterClient {
 
+    /**
+     * counter 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
+     * @param args
+     * @throws Exception
+     */
     public static void main(final String[] args) throws Exception {
         if (args.length != 2) {
             System.out.println("Useage : java com.alipay.sofa.jraft.example.counter.CounterClient {groupId} {conf}");
@@ -47,6 +55,7 @@ public class CounterClient {
 
         RouteTable.getInstance().updateConfiguration(groupId, conf);
 
+        //初始化 RPC 客户端并更新路由表:
         final CliClientServiceImpl cliClientService = new CliClientServiceImpl();
         cliClientService.init(new CliOptions());
 
@@ -54,6 +63,7 @@ public class CounterClient {
             throw new IllegalStateException("Refresh leader failed");
         }
 
+        //获取 leader 后发送请求：
         final PeerId leader = RouteTable.getInstance().selectLeader(groupId);
         System.out.println("Leader is " + leader);
         final int n = 1000;
@@ -70,6 +80,7 @@ public class CounterClient {
     private static void incrementAndGet(final CliClientServiceImpl cliClientService, final PeerId leader,
                                         final long delta, CountDownLatch latch) throws RemotingException,
                                                                                InterruptedException {
+        // 构建 IncrementAndGetRequest 请求并发送到 leader
         final IncrementAndGetRequest request = new IncrementAndGetRequest();
         request.setDelta(delta);
         cliClientService.getRpcClient().invokeAsync(leader.getEndpoint(), request, new InvokeCallback() {

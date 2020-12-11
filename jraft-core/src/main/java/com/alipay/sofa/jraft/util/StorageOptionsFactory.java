@@ -260,6 +260,10 @@ public final class StorageOptionsFactory {
     }
 
     /**
+     * Rocksdb 配置更改：
+     * SOFJRaft 的 log storage 默认实现基于 rocksdb 存储，默认的 rocksdb 配置为吞吐优先原则，
+     * 可能不适合所有场景以及机器规格，比如 4G 内存的机器建议缩小 block_size 以避免过多的内存占用。
+     *
      * Users can register a custom rocksdb BlockBasedTableConfig, then the related
      * classes will get their options by the key of their own class name.  If
      * the user does not register a config, a default config will be provided.

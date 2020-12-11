@@ -129,6 +129,19 @@ import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
 
 /**
+ * Node：SOFAJRaft Server 节点；
+ * raft分布式算法中需要的所有行为，不限于选举计时、投票计时、快照计时、日志管理、Follower复制器、接收rpc请求等。
+ *
+ ----------------------------------------------------------------------------------
+ JRaft Group：
+ 在实际应用中，一个Raft Node是没有任何意义的，因此在线上环境中必须是集群（2n+1，1个Leader + 2*（1+）个Follower）；
+
+ JRaft Multi Group：
+ 一个集群组（JRaft Group）是无法解决大流量的读写瓶颈的，JRaft 自然而然的支持 JRaft Multi Group;
+
+
+ ----------------------------------------------------------------------------------
+ *
  * The raft replica node implementation.
  *
  * @author boyan (boyan@alibaba-inc.com)
@@ -154,29 +167,36 @@ public class NodeImpl implements Node, RaftServerService {
         }
     }
 
-    public final static RaftTimerFactory                                   TIMER_FACTORY            = JRaftUtils
-                                                                                                        .raftTimerFactory();
+    public final static RaftTimerFactory                                   TIMER_FACTORY            = JRaftUtils.raftTimerFactory();
 
+    /** 应用任务最大重试次数 */
     // Max retry times when applying tasks.
     private static final int                                               MAX_APPLY_RETRY_TIMES    = 3;
 
-    public static final AtomicInteger                                      GLOBAL_NUM_NODES         = new AtomicInteger(
-                                                                                                        0);
+    public static final AtomicInteger                                      GLOBAL_NUM_NODES         = new AtomicInteger(0);
 
     /** Internal states */
-    private final ReadWriteLock                                            readWriteLock            = new NodeReadWriteLock(
-                                                                                                        this);
-    protected final Lock                                                   writeLock                = this.readWriteLock
-                                                                                                        .writeLock();
-    protected final Lock                                                   readLock                 = this.readWriteLock
-                                                                                                        .readLock();
+    private final ReadWriteLock                                            readWriteLock            = new NodeReadWriteLock(this);
+    protected final Lock                                                   writeLock                = this.readWriteLock.writeLock();
+    protected final Lock                                                   readLock                 = this.readWriteLock.readLock();
     private volatile State                                                 state;
     private volatile CountDownLatch                                        shutdownLatch;
     private long                                                           currTerm;
+    /**
+     * 在一个非对称网络中，S2 和 Leader S1 无法通信，但是它可以和另一个 Follower S3 依然能够通信，
+     * 在此情况下，S2 发起预投票得到了 S3 的响应，S2 可以发起投票请求。
+     * 接下来 S2 的投票请求会使得 S3 的 Term 也增加以至于超过 Leader S1（S3 收到 S2 的投票请求后，会相应把自己的 Term 提升到跟 S2 一致），
+     * 因此 S3 接下来会拒绝 Leader S1 的日志复制。
+     * 为解决这种情况，SOFAJRaft 在 Follower 本地维护了一个时间戳来记录收到 Leader 上一次数据更新的时间，
+     * Follower S3 只有超过 election timeout 之后才允许接受预投票请求，这样也就避免了 S2 发起投票请求。
+     * */
     private volatile long                                                  lastLeaderTimestamp;
+    /** Raft Group - Leader */
     private PeerId                                                         leaderId                 = new PeerId();
     private PeerId                                                         votedId;
+    /** 选举投票箱 */
     private final Ballot                                                   voteCtx                  = new Ballot();
+    /** 预选举投票箱 */
     private final Ballot                                                   prevVoteCtx              = new Ballot();
     private ConfigurationEntry                                             conf;
     private StopTransferArg                                                stopTransferArg;
@@ -195,6 +215,11 @@ public class NodeImpl implements Node, RaftServerService {
     private FSMCaller                                                      fsmCaller;
     private BallotBox                                                      ballotBox;
     private SnapshotExecutor                                               snapshotExecutor;
+    /**
+     * 用于单个Raft Group 管理所有的 replicator，必要的权限检查和派发；
+     * Leader节点通过 Replicator 和 Follower建立连接之后，要发送一个 Probe 类型的探针请求，
+     * 目的是知道 Follower 已经拥有的的日志位置，以便于向 Follower 发送后续的日志。
+     */
     private ReplicatorGroup                                                replicatorGroup;
     private final List<Closure>                                            shutdownContinuations    = new ArrayList<>();
     private RaftClientService                                              rpcService;
@@ -310,8 +335,7 @@ public class NodeImpl implements Node, RaftServerService {
         private final List<LogEntryAndClosure> tasks = new ArrayList<>(NodeImpl.this.raftOptions.getApplyBatch());
 
         @Override
-        public void onEvent(final LogEntryAndClosure event, final long sequence, final boolean endOfBatch)
-                                                                                                          throws Exception {
+        public void onEvent(final LogEntryAndClosure event, final long sequence, final boolean endOfBatch) throws Exception {
             if (event.shutdownLatch != null) {
                 if (!this.tasks.isEmpty()) {
                     executeApplyingTasks(this.tasks);
@@ -324,6 +348,7 @@ public class NodeImpl implements Node, RaftServerService {
             }
 
             this.tasks.add(event);
+            // 是否批处理结束或者已满足批处理中最大的应用数（32）；处理完成则清空List数据；
             if (this.tasks.size() >= NodeImpl.this.raftOptions.getApplyBatch() || endOfBatch) {
                 executeApplyingTasks(this.tasks);
                 this.tasks.clear();
@@ -1429,10 +1454,80 @@ public class NodeImpl implements Node, RaftServerService {
         }
     }
 
+    /*
+    两阶段提交（2PC）
+        1、第一阶段：投票阶段（Prepare）
+            第一阶段主要分为3步
+            1）事务询问
+                协调者 向所有的 参与者 发送事务预处理请求，称之为Prepare，并开始等待各 参与者 的响应。
+            2）执行本地事务
+                各个 参与者 节点执行本地事务操作,但在执行完成后并不会真正提交数据库本地事务，
+                而是先向 协调者 报告说：“我这边可以处理了/我这边不能处理”。.
+            3）各参与者向协调者反馈事务询问的响应
+                如果 参与者 成功执行了事务操作,那么就反馈给协调者 Yes 响应,表示事务可以执行,
+                如果没有 参与者 成功执行事务,那么就反馈给协调者 No 响应,表示事务不可以执行。
+
+    ----第一阶段执行完后，存在两种可能。1、所有都返回Yes. 2、有一个或者多个返回No。----
+
+        2、第二阶段：提交/执行阶段（成功流程）（Commit）
+            成功条件：所有参与者都返回Yes。
+            第二阶段主要分为两步
+            1)所有的参与者反馈给协调者的信息都是Yes,那么就会执行事务提交
+                协调者 向 所有参与者 节点发出Commit请求.
+            2)事务提交
+                参与者 收到Commit请求之后,就会正式执行本地事务Commit操作,并在完成提交之后释放整个事务执行期间占用的事务资源。
+        3、第二阶段：提交/执行阶段（异常流程）（Rollback）
+            异常条件：任何一个 参与者 向 协调者 反馈了 No 响应,或者等待超时之后,协调者尚未收到所有参与者的反馈响应。
+            异常流程第二阶段也分为两步
+            1)发送回滚请求
+                协调者 向所有参与者节点发出 RollBack 请求.
+            2)事务回滚
+                参与者 接收到RollBack请求后,会回滚本地事务。
+    * */
+
+    /**
+     * 由Leader执行应用任务，检查Task的term，为Task创建投票机制，决策LogEntry是否允许Commit；
+     * ------
+     * Raft 算法：
+     *      Raft 是一种为了管理复制日志的一致性算法；
+     *
+     * 什么是一致性呢？
+     *      Raft论文：一致性算法允许一组机器像一个整体一样工作，即使其中一些机器出现故障也能够继续工作下去；
+     *
+     * 可视化的Raft算法：
+     *      https://raft.github.io/raftscope/index.html
+     *
+     *      1）准备阶段
+     *          Leader 节点创建并初始化投票箱，用于确定有效投票数 quorum（PeerId.size() / 2 + 1）；
+     *      2）确认阶段
+     *          复制日志的 pipeline 机制
+     *
+     *          Pipeline 使得 Leader 和 Follower 双方不再需要严格遵从 “Request - Response - Request” 的交互模式，
+     *          Leader 可以在没有收到 Response 的情况下，持续的将复制日志的 AppendEntriesRequest 发送给 Follower。
+     *
+     *          在具体实现时，Leader 只需要针对每个 Follower 维护一个队列，记录下已经复制的日志，
+     *          如果有日志复制失败的情况，就将其后的日志重发给 Follower。
+     *
+     * ---------
+     * 源码解读 {@link BallotBox#appendPendingTask(Configuration, Configuration, Closure)
+     *      创建并初始化投票箱，确认有效投票数 quorum（peers.size()/2 + 1），
+     *      根据 pendingIndex<=0 再次验证是否是 Leader节点为LogEntry决策Commit发起投票机制，
+     *      设置callback回调，用于确认是否赢得过半的票数；
+     * }
+     * 源码解读 {@link LogManagerImpl#appendEntries(List, LogManager.StableClosure)
+     *      Raft协议参与者接收日志（Leader，Follower，Learner），主要实现如下：
+     *          1）如果term < currentTerm, 不接受日志并返回false
+     *          2）如果索引prevLogIndex处的日志的任期号与prevLogTerm不匹配, 不接受日志并返回false
+     *          3）如果一条已存在的日志与新的冲突(index相同但是term不同), 则删除已经存在的日志条目和它之后所有的日志条目
+     *          4）添加任何在已有日志中不存在的条目
+     *          5）如果leaderCommit > commitIndex, 则设置commitIndex = min(leaderCommit, index of last new entry)
+     * }
+     */
     private void executeApplyingTasks(final List<LogEntryAndClosure> tasks) {
         this.writeLock.lock();
         try {
             final int size = tasks.size();
+            // 若当前节点不是Leader，则标记任务失败，设置Callback；
             if (this.state != State.STATE_LEADER) {
                 final Status st = new Status();
                 if (this.state != State.STATE_TRANSFERRING) {
@@ -1450,8 +1545,10 @@ public class NodeImpl implements Node, RaftServerService {
                 return;
             }
             final List<LogEntry> entries = new ArrayList<>(size);
+            // 循环处理Tasks，
             for (int i = 0; i < size; i++) {
                 final LogEntryAndClosure task = tasks.get(i);
+                // 若预期term不是默认值-1，或者预期term与当前term不一致，则忽略此Task的LogEntry；
                 if (task.expectedTerm != -1 && task.expectedTerm != this.currTerm) {
                     LOG.debug("Node {} can't apply task whose expectedTerm={} doesn't match currTerm={}.", getNodeId(),
                         task.expectedTerm, this.currTerm);
@@ -1462,12 +1559,14 @@ public class NodeImpl implements Node, RaftServerService {
                     }
                     continue;
                 }
+                // Leader 节点调用appendPendingTask，为Task创建并初始化投票机制，决策LogEntry 是否允许commit
                 if (!this.ballotBox.appendPendingTask(this.conf.getConf(),
                     this.conf.isStable() ? null : this.conf.getOldConf(), task.done)) {
                     Utils.runClosureInThread(task.done, new Status(RaftError.EINTERNAL, "Fail to append task."));
                     continue;
                 }
                 // set task entry info before adding to list.
+                // 设置日志的term为当前term，类型为ENTRY_TYPE_DATA
                 task.entry.getId().setTerm(this.currTerm);
                 task.entry.setType(EnumOutter.EntryType.ENTRY_TYPE_DATA);
                 entries.add(task.entry);
@@ -1500,18 +1599,7 @@ public class NodeImpl implements Node, RaftServerService {
     }
 
     /**
-     * [SSS-发起线性一致读请求]
-     * 当可以安全读取的时候， 传入的 closure 将被调用，
-     * 正常情况下可以从状态机中读取数据返回给客户端， jraft 将保证读取的线性一致性。
-     * 其中 requestContext 提供给用户作为请求的附加上下文，可以在 closure 里再次拿到继续处理。
      *
-     * 注意：线性一致读可以在集群内的任何节点发起，并不需要强制要求放到 Leader 节点上，
-     * 也可以在 Follower 执行，因此可以大大降低 Leader 的读取压力。
-     *
-     * 默认情况下，jraft 提供的线性一致读是基于 RAFT 协议的 ReadIndex 实现的；
-     * 在一些更高性能（两个实现的性能差距大概在 15% 左右）的场景下，并且可以保证集群内机器的 CPU 时钟同步，
-     * 那么可以采用 Clock + Heartbeat 的 Lease Read 优化，
-     * 可以通过服务端设置 RaftOptions 的 ReadOnlyOption 为 ReadOnlyLeaseBased 来实现。
      *
      */
     @Override
@@ -1689,25 +1777,45 @@ public class NodeImpl implements Node, RaftServerService {
         }
     }
 
+    /**
+     * Task: 用于向一个 Raft group 提交一个任务，Task包含：数据（二进制协议：protobuf），term（预期任期），done（Callback 接口）等；
+     * Disruptor 队列 - 使用LogEntry封装Task，以事件的形式投递给RingBuffer；
+     * 源码解读 {@link LogEntryAndClosureHandler#onEvent(LogEntryAndClosure, long, boolean)
+     *      接收到RingBuffer的事件，调用executeApplyingTasks消费事件；
+     * }
+     * 源码解读 {@link NodeImpl#executeApplyingTasks(List)
+     *      以Leader身份处理任务，包括：决策是否Commit、异步刷盘、写入Rock是DB存储、应用任务至状态机等；
+     * }
+     */
     @Override
     public void apply(final Task task) {
+        // 当前节点（Leader）被关闭
         if (this.shutdownLatch != null) {
             Utils.runClosureInThread(task.getDone(), new Status(RaftError.ENODESHUTDOWN, "Node is shutting down."));
             throw new IllegalStateException("Node is shutting down");
         }
         Requires.requireNonNull(task, "Null task");
 
+        // 创建一个LogEntry,用于封装Task数据
         final LogEntry entry = new LogEntry();
         entry.setData(task.getData());
         int retryTimes = 0;
         try {
+            //将SourceEventModel转换成TargetEventModel，然后disruptor中的handler链就消费TargetEventModel对象；
             final EventTranslator<LogEntryAndClosure> translator = (event, sequence) -> {
                 event.reset();
                 event.done = task.getDone();
                 event.entry = entry;
                 event.expectedTerm = task.getExpectedTerm();
             };
+            /**
+             * 尝试将事件发布至缓冲区（RingBuffer）Disruptor队列进行异步处理，若指定容量不可用，则返回false，最大重试次数为3次；
+             * 当事件在RingBuffer可用时，Disruptor 队列设置了一个回调的接口函数（EventHandler<T>）用于消费Disruptor队列中的事件；
+             * 源码解读- {@link LogEntryAndClosureHandler#onEvent(LogEntryAndClosure, long, boolean)} 消费Disruptor队列事件}
+             *
+             * */
             while (true) {
+                // Task封装成LogEntry对象以事件的形式投递给
                 if (this.applyQueue.tryPublishEvent(translator)) {
                     break;
                 } else {
@@ -1731,6 +1839,10 @@ public class NodeImpl implements Node, RaftServerService {
 
     /**
      * [SSS-预选举投票入口]
+     *
+     * 接收日志的follower需要实现：
+     *      如果term < currentTerm, 那么拒绝投票并返回false
+     *      如果votedFor为空或者与candidateId相同, 并且候选人的日志和自己一样新或者更新, 那么就给候选人投票并返回true
      */
     @Override
     public Message handlePreVoteRequest(final RequestVoteRequest request) {
@@ -1745,6 +1857,7 @@ public class NodeImpl implements Node, RaftServerService {
                     .newResponse(RequestVoteResponse.getDefaultInstance(), RaftError.EINVAL,
                         "Node %s is not in active state, state %s.", getNodeId(), this.state.name());
             }
+            // 构建一个 candidate ，作为 raft 协议参与者
             final PeerId candidateId = new PeerId();
             // 解析 request 请求携带的 serverId 内容是否符合标准
             if (!candidateId.parse(request.getServerId())) {
@@ -1758,13 +1871,20 @@ public class NodeImpl implements Node, RaftServerService {
             boolean granted = false;
             // noinspection ConstantConditions
             do {
-                // 不在conf的节点忽略（不参与Leader选举）
+                // 不在conf范围的节点忽略（不参与Leader选举）
                 if (!this.conf.contains(candidateId)) {
                     LOG.warn("Node {} ignore PreVoteRequest from {} as it is not in conf <{}>.", getNodeId(),
                         request.getServerId(), this.conf);
                     break;
                 }
                 // 当前存在Leader，并且Leader还还在ElectionTime期间，不可预投票
+                // isCurrentLeaderValid() 作用：
+                //      在一个非对称网络中，S2 和 Leader S1 无法通信，但是它可以和另一个 Follower S3 依然能够通信，
+                //      在此情况下，S2 发起预投票得到了 S3 的响应，S2 可以发起投票请求。
+                //      接下来 S2 的投票请求会使得 S3 的 Term 也增加以至于超过 Leader S1（S3 收到 S2 的投票请求后，会相应把自己的 Term 提升到跟 S2 一致），
+                //      因此 S3 接下来会拒绝 Leader S1 的日志复制。
+                //      为解决这种情况，SOFAJRaft 在 Follower 本地维护了一个时间戳来记录收到 Leader 上一次数据更新的时间，
+                //      Follower S3 只有超过 election timeout 之后才允许接受预投票请求，这样也就避免了 S2 发起投票请求。
                 if (this.leaderId != null && !this.leaderId.isEmpty() && isCurrentLeaderValid()) {
                     LOG.info(
                         "Node {} ignore PreVoteRequest from {}, term={}, currTerm={}, because the leader {}'s lease is still valid.",
@@ -1987,6 +2107,9 @@ public class NodeImpl implements Node, RaftServerService {
         }
     }
 
+    /**
+     * [SSS-Raft日志复制 关注方法]
+     */
     @Override
     public Message handleAppendEntriesRequest(final AppendEntriesRequest request, final RpcRequestClosure done) {
         boolean doUnlock = true;
@@ -2674,7 +2797,7 @@ public class NodeImpl implements Node, RaftServerService {
         boolean doUnlock = true;
         this.writeLock.lock();
         try {
-            // Follower才可以预选举（可能已经超过半数选票，预选举已经结束，节点处于Candidate、Leader或节点错误等），否则返回；
+            // Follower才可以预选举（此时可能已经超过半数选票，预选举已经结束，节点处于Candidate、Leader或节点错误等），否则返回；
             if (this.state != State.STATE_FOLLOWER) {
                 LOG.warn("Node {} received invalid PreVoteResponse from {}, state not in STATE_FOLLOWER but {}.",
                     getNodeId(), peerId, this.state);
@@ -3228,6 +3351,13 @@ public class NodeImpl implements Node, RaftServerService {
     }
 
     /**
+     * 快照：所谓快照就是对数据当前值的一个记录，Leader 生成快照有这么几个作用：
+     *      1）当有新的 Node 加入集群的时候，不用只靠日志复制、回放去和 Leader 保持数据一致，
+     *      而是通过安装 Leader 的快照来跳过早期大量日志的回放；
+     *      2）Leader 用快照替代 Log 复制可以减少网络上的数据量；
+     *      3）用快照替代早期的 Log 可以节省存储空间。
+     *
+     *
      * 除了依靠定时任务触发以外，SOFAJRaft 也支持实现自定义的 Closure 类的回调方法，
      * 通过 Node 接口主动触发 Snapshot，并将结果通过 Closure 回调。
      * 同时，用户在继承并实现业务状态机类“StateMachineAdapter”（该类为抽象类）时候需要，一并实现其中的  onSnapshotSave()/onSnapshotLoad()  方法：

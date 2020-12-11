@@ -19,6 +19,9 @@ package com.alipay.sofa.jraft.example.counter.rpc;
 import java.io.Serializable;
 
 /**
+ * 在多个节点（机器）组成的一个 raft group 中保存一个分布式计数器，
+ * 该计数器可以递增和获取，并且在所有节点之间保持一致，任何少数节点的挂掉都不会影响对外提供的两个服务：
+ *
  * Increment value with delta and get the new value request.
  *
  * @author boyan (boyan@alibaba-inc.com)

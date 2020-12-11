@@ -465,6 +465,7 @@ public class FSMCallerImpl implements FSMCaller {
     }
 
     private void doCommitted(final long committedIndex) {
+        // 状态机运行异常
         if (!this.error.getStatus().isOk()) {
             return;
         }

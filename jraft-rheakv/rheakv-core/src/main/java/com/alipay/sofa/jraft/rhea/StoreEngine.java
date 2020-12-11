@@ -77,6 +77,13 @@ import com.codahale.metrics.ScheduledReporter;
 import com.codahale.metrics.Slf4jReporter;
 
 /**
+ * HeartbeatSender 负责发送当前存储节点的心跳，心跳中包含一些状态信息，心跳一共分为两类：StoreHeartbeat 和 RegionHeartbeat
+ * PD 不断接受 rheaKV 集群这两类心跳消息，PD 在对 region leader 的心跳回复里面包含了具体调度指令，再以这些信息作为决策依据。
+ * 除此之外，PD 还应该可以通过管理接口接收额外的运维指令，用来人为执行更准确的决策；
+ * 两类心跳包含的状态信息详细内容如下：
+ * StoreHeartbeat -> StoreStats
+ * RegionHeartbeat -> RegionStats
+ *
  * Storage engine, there is only one instance in a node,
  * containing one or more {@link RegionEngine}.
  *

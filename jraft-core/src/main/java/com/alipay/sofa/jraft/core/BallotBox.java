@@ -51,6 +51,12 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
     private ClosureQueue              closureQueue;
     private final StampedLock         stampedLock        = new StampedLock();
     private long                      lastCommittedIndex = 0;
+    /**
+     * 当一个Candidate选举为Leader之后，会调用resetPendingIndex方法，重置pendingIndex的值；
+     * 在Leader下台的时候会调用clearPendingTasks，将pendingIndex设置为0；
+     * 源码解读 {@link BallotBox#resetPendingIndex(long) 选举为Leader，重置pendingIndex}
+     * 源码解读 {@link BallotBox#clearPendingTasks() Leader下台，pendingIndex=0}
+     */
     private long                      pendingIndex;
     private final SegmentList<Ballot> pendingMetaQueue   = new SegmentList<>(false);
 
@@ -98,26 +104,34 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
         final long stamp = this.stampedLock.writeLock();
         long lastCommittedIndex = 0;
         try {
+            // Leader 已下台
             if (this.pendingIndex == 0) {
                 return false;
             }
+            // 重复提交数据
             if (lastLogIndex < this.pendingIndex) {
                 return true;
             }
 
+            // 超出最大范围
             if (lastLogIndex >= this.pendingIndex + this.pendingMetaQueue.size()) {
                 throw new ArrayIndexOutOfBoundsException();
             }
 
             final long startAt = Math.max(this.pendingIndex, firstLogIndex);
             Ballot.PosHint hint = new Ballot.PosHint();
+
+            // 遍历检查当前批次中的LogEntry是否已经成功被过半的节点数复制
             for (long logIndex = startAt; logIndex <= lastLogIndex; logIndex++) {
                 final Ballot bl = this.pendingMetaQueue.get((int) (logIndex - this.pendingIndex));
                 hint = bl.grant(peer, hint);
+                // 若被过半的节点数成功复制（不包含Learner节点的复制），记录最新的lastCommittedIndex
                 if (bl.isGranted()) {
                     lastCommittedIndex = logIndex;
                 }
             }
+            // 没有一条LogEntry被过半的Follower复制成功，先结束；
+            // 之后等待下一个Raft参与者（Leader或Follower，因为同时进行有可能Follower比Leader先写入成功）的granted检查。
             if (lastCommittedIndex == 0) {
                 return true;
             }
@@ -127,13 +141,17 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
             // logs, since we use the new configuration to deal the quorum of the
             // removal request, we think it's safe to commit all the uncommitted
             // previous logs, which is not well proved right now
+            // 剔除已经被过半数节点复制的 LogIndex 对应的选票，删除[0, toIndex)的元素（左闭右开）；
+            // 因为Raft 保证一个 LogEntry 被提交之后，在此之前的 LogEntry 一定是 committed 状态。
             this.pendingMetaQueue.removeFromFirst((int) (lastCommittedIndex - this.pendingIndex) + 1);
             LOG.debug("Committed log fromIndex={}, toIndex={}.", this.pendingIndex, lastCommittedIndex);
             this.pendingIndex = lastCommittedIndex + 1;
+            // 更新集群的 lastCommittedIndex 值
             this.lastCommittedIndex = lastCommittedIndex;
         } finally {
             this.stampedLock.unlockWrite(stamp);
         }
+        // 向状态机发布 COMMITTED 事件
         this.waiter.onCommitted(lastCommittedIndex);
         return true;
     }
@@ -195,6 +213,7 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
      * @return          returns true on success
      */
     public boolean appendPendingTask(final Configuration conf, final Configuration oldConf, final Closure done) {
+        // 创建一个投票箱，并初始化投票箱的有效投票数quorum（peers.size() /2 + 1）;
         final Ballot bl = new Ballot();
         if (!bl.init(conf, oldConf)) {
             LOG.error("Fail to init ballot.");
@@ -202,10 +221,12 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
         }
         final long stamp = this.stampedLock.writeLock();
         try {
+            // 再次检验是否为Leader
             if (this.pendingIndex <= 0) {
                 LOG.error("Fail to appendingTask, pendingIndex={}.", this.pendingIndex);
                 return false;
             }
+            // 设置投票数统计回调，记录投票（用于确定是否赢得过半数投票）
             this.pendingMetaQueue.add(bl);
             this.closureQueue.appendPendingClosure(done);
             return true;

@@ -560,6 +560,17 @@ public class DefaultRheaKVStore implements RheaKVStore {
         return scan(BytesUtil.writeUtf8(startKey), BytesUtil.writeUtf8(endKey), readOnlySafe);
     }
 
+    /**
+     *
+     * @param startKey     first key to scan within database (included),
+     *                     null means 'min-key' in the database.
+     * @param endKey       last key to scan within database (excluded).
+     *                     null means 'max-key' in the database.
+     * @param readOnlySafe provide consistent reading if {@code readOnlySafe}
+     *                     is true.
+     * @param returnValue  whether to return value.
+     * @return
+     */
     @Override
     public CompletableFuture<List<KVEntry>> scan(final byte[] startKey, final byte[] endKey,
                                                  final boolean readOnlySafe, final boolean returnValue) {

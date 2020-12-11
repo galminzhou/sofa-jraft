@@ -43,6 +43,7 @@ import com.alipay.sofa.jraft.util.Requires;
 import com.alipay.sofa.jraft.util.ThreadId;
 
 /**
+ * 在一个Raft Group 的协议参与者（Follower 追随者 and Learner 学习者）
  * Replicator group for a raft group.
  * @author boyan (boyan@alibaba-inc.com)
  *
@@ -57,7 +58,9 @@ public class ReplicatorGroupImpl implements ReplicatorGroup {
     private final ConcurrentMap<PeerId, ThreadId> replicatorMap      = new ConcurrentHashMap<>();
     /** common replicator options */
     private ReplicatorOptions                     commonOptions;
+    /** 心跳间隔，通常应该比 election timeout 小一个数量级，目的是让 leader 能够持续发送心跳来阻止 followers 触发选举 */
     private int                                   dynamicTimeoutMs   = -1;
+    /** Leader 与 followers 间通信超时触发选举的时间 */
     private int                                   electionTimeoutMs  = -1;
     private RaftOptions                           raftOptions;
     private final Map<PeerId, ReplicatorType>     failureReplicators = new ConcurrentHashMap<>();

@@ -47,6 +47,14 @@ import com.alipay.sofa.jraft.util.ThreadPoolUtil;
 import com.alipay.sofa.jraft.util.Utils;
 
 /**
+ * 全局的中心总控节点，负责整个集群的调度，
+ * 一个 PD server 可以管理多个集群，集群之间基于 clusterId 隔离；
+ * PD server 需要单独部署，当然，很多场景其实并不需要自管理，rheaKV 也支持不启用 PD。
+ *
+ * Store 集群中的一个物理存储节点，一个 store 包含一个或多个 region；
+ * egion 最小的 KV 数据单元，每个 region 都有一个左闭右开的区间 [startKey, endKey),
+ * 可根据请求流量/负载/数据量大小等指标自动分裂以及自动副本搬迁；
+ *
  * PlacementDriverServer is a role responsible for overall global control.
  *
  * <pre>

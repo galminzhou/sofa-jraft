@@ -22,6 +22,8 @@ import com.alipay.sofa.jraft.rhea.util.pipeline.event.OutboundMessageEvent;
 import com.alipay.sofa.jraft.rhea.util.pipeline.future.PipelineFuture;
 
 /**
+ * 是针对心跳上报 Stats 的计算以及存储处理流水线，处理单元 (Handler) 可插拔，非常方便扩展。
+ *
  * A list of {@link Handler}s which handles or intercepts
  * inbound events and outbound operations.
  *

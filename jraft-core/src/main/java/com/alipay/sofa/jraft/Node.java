@@ -33,9 +33,34 @@ import com.alipay.sofa.jraft.option.RaftOptions;
 import com.alipay.sofa.jraft.util.Describer;
 
 /**
+ -----------------JRaft Node Design ------------------------------------
+ * Node
+ *      Raft 分组中的一个节点，连接封装底层的所有服务，用户看到的主要服务接口，
+ *      特别是 apply(task) 用于向 raft group 组成的复制状态机集群提交新任务应用到业务状态机
+ * 存储:
+ *      Log 存储，记录 raft 用户提交任务的日志，将日志从 leader 复制到其他节点上。
+ *          LogStorage 是存储实现，默认实现基于 RocksDB 存储，你也可以很容易扩展自己的日志存储实现
+ *          LogManager 负责对底层存储的调用，对调用做缓存、批量提交、必要的检查和优化
+ *      Metadata 存储，元信息存储，记录 raft 实现的内部状态，比如当前 term、投票给哪个节点等信息
+ *      Snapshot 存储，用于存放用户的状态机 snapshot 及元信息，可选。
+ *          SnapshotStorage 用于 snapshot 存储实现。
+ *          SnapshotExecutor 用于 snapshot 实际存储、远程安装、复制的管理
+ * 状态机
+ *      StateMachine：用户核心逻辑的实现，核心是 onApply(Iterator) 方法, 应用通过 Node#apply(task) 提交的日志到业务状态机
+ *      FSMCaller:封装对业务 StateMachine 的状态转换的调用以及日志的写入等,一个有限状态机的实现,做必要的检查、请求合并提交和并发处理等
+ * 复制
+ *      Replicator：用于 leader 向 followers 复制日志，也就是 raft 中的 AppendEntries 调用，包括心跳存活检查等
+ *      ReplicatorGroup：用于单个 raft group 管理所有的 replicator，必要的权限检查和派发
+ * RPC：RPC 模块用于节点之间的网络通讯
+ *      RPC Server：内置于 Node 内的 RPC 服务器，接收其他节点或者客户端发过来的请求，转交给对应服务处理
+ *      RPC Client：用于向其他节点发起请求，例如投票、复制日志、心跳等
+ * KV Store：KV Store 是各种 Raft 实现的一个典型应用场景，JRaft 中包含了一个嵌入式的分布式 KV 存储实现（JRaft-RheaKV）。
+ -----------------JRaft Node Design ------------------------------------
+ *
+ *
  * Raft 节点 Node ： Node 接口表示一个 raft 的参与节点，
  * 可以提交 task，以及查询 raft group 信息，比如当前状态、当前 leader/term 等；
- * 他的角色可能是 leader、follower 或者 candidate，随着选举过程而转变。
+ * 他的角色可能是 leader、follower 或者 candidate，随着选举过程而转变，（1.3之后加入Learner节点，不参与任何投票）。
  *
  * 创建一个 raft 节点可以通过 RaftServiceFactory.createRaftNode(String groupId, PeerId serverId) 静态方法，其中
  * - groupId 该 raft 节点的 raft group Id。
@@ -52,6 +77,9 @@ import com.alipay.sofa.jraft.util.Describer;
  *
  * 创建和初始化结合起来也可以直接用 createAndInitRaftNode 方法：
  *      Node node = RaftServiceFactory.createAndInitRaftNode(groupId, serverId, nodeOpts);
+ *
+ *
+ *
  *
  * A raft replica node.
  *
@@ -143,6 +171,19 @@ public interface Node extends Lifecycle<NodeOptions>, Describer {
 
     /**
      * [Thread-safe and wait-free]
+     * [SSS-发起线性一致读请求]
+     *
+     * 当可安全读取的时候（appleIndex > ReadIndex）， 设置的的 closure（callback）将被调用，
+     * 正常情况下可以从状态机中读取数据返回给客户端， jraft 将保证读取的线性一致性。
+     * 其中 requestContext 提供给用户作为请求的附加上下文，可以在 closure 里再次拿到继续处理。
+     *
+     * 注意：线性一致读可以在集群内的任何节点发起，并不需要强制要求放到 Leader 节点上，
+     * 也可以在 Follower 执行，因此可以大大降低 Leader 的读取压力。（JRaft 中可配置是否从 follower 读取，默认不打开）
+     *
+     * 默认情况下，jraft 提供的线性一致读是基于 RAFT 协议的 ReadIndex 实现的；
+     * 在一些更高性能（两个实现的性能差距大概在 15% 左右）的场景下，并且可以保证集群内机器的 CPU 时钟同步，
+     * 那么可以采用 Clock + Heartbeat 的 Lease Read 优化，
+     * 可以通过服务端设置 RaftOptions 的 ReadOnlyOption 为 ReadOnlyLeaseBased 来实现。
      *
      * Starts a linearizable read-only query request with request context(optional,
      * such as request id etc.) and closure.  The closure will be called when the

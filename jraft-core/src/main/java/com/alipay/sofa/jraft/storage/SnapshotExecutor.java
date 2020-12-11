@@ -26,6 +26,10 @@ import com.alipay.sofa.jraft.rpc.RpcRequests.InstallSnapshotResponse;
 import com.alipay.sofa.jraft.util.Describer;
 
 /**
+ * Snapshot 存储，用于存放用户的状态机 snapshot 及元信息，可选。
+ * SnapshotStorage 用于 snapshot 存储实现。
+ * SnapshotExecutor 用于 snapshot 实际存储、远程安装、复制的管理
+ *
  * Executing Snapshot related stuff.
  *
  * @author boyan (boyan@alibaba-inc.com)

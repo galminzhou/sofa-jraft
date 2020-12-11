@@ -74,6 +74,9 @@ class DefaultDistributedLock extends DistributedLock<byte[]> {
         }
     }
 
+    /**
+     *
+     */
     @Override
     protected Owner internalTryLock(final byte[] ctx) {
         final byte[] internalKey = getInternalKey();

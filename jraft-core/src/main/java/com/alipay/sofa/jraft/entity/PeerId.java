@@ -30,10 +30,32 @@ import com.alipay.sofa.jraft.util.Endpoint;
 import com.alipay.sofa.jraft.util.Utils;
 
 /**
- * 表示一个 raft 协议的参与者（leader/follower/candidate etc.)，
+ * 表示一个 raft 协议的参与者（leader/follower/candidate/learner(1.3之后新增，不参与选举不参与投票) etc.)，
  * 它由三元素组成： ip:port:index， IP 就是节点的 IP， port 就是端口，
  * index 表示同一个端口的序列号，目前没有用到，总被认为是 0。
  * 预留此字段是为了支持同一个端口启动不同的 raft 节点，通过 index 区分。
+ *
+ -----------------------服务器要遵守的规则-------------------------------------------
+    所有服务器:
+        如果commitIndex > lastApplied, 那么将lastApplied自增并把对应日志log[lastApplied]应用到状态机
+        如果RPC请求或响应包含一个term T大于currentTerm, 那么将currentTerm赋值为T并立即切换状态为follower
+    Follower（追随者）:
+        无条件响应来自candidate和leader的RPC
+        如果在选举超时之前没收到任何来自leader的AppendEntries RPC或RequestVote RPC, 那么自己转换状态为candidate
+    Candidate（候选者）:
+        转变为candidate之后开始发起选举
+        currentTerm自增 –> 重置选举计时器 –> 给自己投票 –> 向其他服务器发起RequestVote RPC
+        如果收到了来自大多数服务器的投票, 转换状态成为leader
+        如果收到了来自新leader的AppendEntries RPC(Heartbeat), 转换状态为follower
+        如果选举超时, 开始新一轮的选举
+    Leader（领导者）:
+        一旦成为leader, 想其他所有服务器发送空的AppendEntries RPC(Heartbeat), 并在空闲时间重复发送以防选举超时
+        如果收到来自客户端的请求, 向本地日志追加条目并向所有服务器发送AppendEntries RPC, 在收到大多数响应后将该条目应用到状态机并回复响应给客户端
+        如果leader上一次收到的日志索引大于一个follower的nextIndex, 那么通过AppendEntries RPC将nextIndex之后的所有日志发送出去; 如果发送成功, 将follower的nextIndex和matchIndex更新, 如果由于日志不一致导致失败, 那么将nextIndex递减并重新发送
+        如果存在一个N > commitIndex和半数以上的matchIndex[i] >= N并且log[N].term == currentTerm, 将commitIndex赋值为N
+    Learner（学习者）：
+        除了接受AppendEntries 日志条目和 snapshot 快照，不参与其它事件
+ ------------------------------------------------------------------
  *
  * 创建一个 PeerId, index 指定为 0， ip 和端口分别是 localhost 和 8080:
  *      PeerId peer = new PeerId("localhost", 8080);

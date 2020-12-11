@@ -94,6 +94,9 @@ public abstract class RepeatedTimer implements Describer {
         return timeoutMs;
     }
 
+    /**
+     *
+     */
     public void run() {
         this.invoking = true;
         try {
@@ -192,6 +195,7 @@ public abstract class RepeatedTimer implements Describer {
 
     private void schedule() {
         // 若Timeout不是Null，则调用HashedWheelTimeout的cancel方法（）
+        // 取消Leader election的执行；再次获取一个范围随机的超时时间；
         if (this.timeout != null) {
             this.timeout.cancel();
         }
