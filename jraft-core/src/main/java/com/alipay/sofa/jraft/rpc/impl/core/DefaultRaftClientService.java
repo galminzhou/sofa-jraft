@@ -102,16 +102,21 @@ public class DefaultRaftClientService extends AbstractClientService implements R
         return invokeWithDone(endpoint, request, done, this.nodeOptions.getElectionTimeoutMs());
     }
 
+    /**
+     * 检查连接并发送异步RPC请求，设置done回调；
+     */
     @Override
     public Future<Message> appendEntries(final Endpoint endpoint, final AppendEntriesRequest request,
                                          final int timeoutMs, final RpcResponseClosure<AppendEntriesResponse> done) {
         final Executor executor = this.appendEntriesExecutorMap.computeIfAbsent(endpoint, k -> APPEND_ENTRIES_EXECUTORS.next());
 
+        // 检查连接，并发送异步RPC请求，设置done回调；
         if (checkConnection(endpoint, true)) {
             return invokeWithDone(endpoint, request, done, timeoutMs, executor);
         }
 
         // fail-fast when no connection
+        // 当没有连接时，快速故障
         final FutureImpl<Message> future = new FutureImpl<>();
         executor.execute(() -> {
             if (done != null) {

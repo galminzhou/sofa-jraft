@@ -21,10 +21,21 @@ import java.util.ArrayList;
 import java.util.Collection;
 
 /**
+ * 参考：https://www.cnblogs.com/luozhiyun/p/11924850.html
+ *
  * A simple {@link java.nio.ByteBuffer} list which is recyclable.
  * This implementation does not allow {@code null} elements to be added.
  */
 public final class RecyclableByteBufferList extends ArrayList<ByteBuffer> implements Recyclable {
+
+    private transient final Recyclers.Handle                 handle;
+
+    private static final Recyclers<RecyclableByteBufferList> recyclers = new Recyclers<RecyclableByteBufferList>(512) {
+        @Override
+        protected RecyclableByteBufferList newObject(final Handle handle) {
+            return new RecyclableByteBufferList(handle);
+        }
+    };
 
     private static final long serialVersionUID         = -8605125654176467947L;
 
@@ -33,6 +44,7 @@ public final class RecyclableByteBufferList extends ArrayList<ByteBuffer> implem
     private int               capacity                 = 0;
 
     /**
+     * 获取一个RecyclableByteBufferList实例
      * Create a new empty {@link RecyclableByteBufferList} instance
      */
     public static RecyclableByteBufferList newInstance() {
@@ -40,10 +52,12 @@ public final class RecyclableByteBufferList extends ArrayList<ByteBuffer> implem
     }
 
     /**
+     * 获取一个RecyclableByteBufferList实例
      * Create a new empty {@link RecyclableByteBufferList} instance with the given capacity.
      */
     public static RecyclableByteBufferList newInstance(final int minCapacity) {
         final RecyclableByteBufferList ret = recyclers.get();
+        // 若容量不够则扩容
         ret.ensureCapacity(minCapacity);
         return ret;
     }
@@ -95,6 +109,7 @@ public final class RecyclableByteBufferList extends ArrayList<ByteBuffer> implem
         throw reject("remove");
     }
 
+    /** 回收RecyclableByteBufferList对象 */
     @Override
     public boolean recycle() {
         clear();
@@ -123,14 +138,5 @@ public final class RecyclableByteBufferList extends ArrayList<ByteBuffer> implem
         this.handle = handle;
     }
 
-    private transient final Recyclers.Handle                 handle;
 
-    private static final Recyclers<RecyclableByteBufferList> recyclers = new Recyclers<RecyclableByteBufferList>(512) {
-
-                                                                           @Override
-                                                                           protected RecyclableByteBufferList newObject(final Handle handle) {
-                                                                               return new RecyclableByteBufferList(
-                                                                                   handle);
-                                                                           }
-                                                                       };
 }

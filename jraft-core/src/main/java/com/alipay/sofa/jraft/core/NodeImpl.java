@@ -1290,6 +1290,13 @@ public class NodeImpl implements Node, RaftServerService {
         }
     }
 
+    /**
+     * 基于请求中的term和本地节点状态，决策是否执行 stepDown；
+     *      1.请求中的term大于当前最新的term，执行 stepDown;
+     *      2. Candidate 收到任期相同的 Leader的 appendEntries;
+     *      3. Leader.isEmpty() true，
+     *  Leader == null || Leader.isEmpty()，将请求的PeerId的设置为Leader；
+     */
     // in writeLock
     private void checkStepDown(final long requestTerm, final PeerId serverId) {
         final Status status = new Status();
@@ -1304,21 +1311,28 @@ public class NodeImpl implements Node, RaftServerService {
             stepDown(requestTerm, false, status);
         }
         // save current leader
+        // 若Group Raft中 PeerId的leaderId不存在，则将请求的PeerId设置为Leader
         if (this.leaderId == null || this.leaderId.isEmpty()) {
             resetLeaderId(serverId, status);
         }
     }
 
+    /**
+     * 当选Leader，重置RaftGroup Term，添加协议参与者（PeerId）的Replicator进行复制日志
+     * */
     private void becomeLeader() {
         Requires.requireTrue(this.state == State.STATE_CANDIDATE, "Illegal state: " + this.state);
         LOG.info("Node {} become leader of group, term={}, conf={}, oldConf={}.", getNodeId(), this.currTerm,
             this.conf.getConf(), this.conf.getOldConf());
         // cancel candidate vote timer
+        // 取消candidate（候选人）投票定时器
         stopVoteTimer();
+        // 设置为Leader，保存leaderId，重置term
         this.state = State.STATE_LEADER;
         this.leaderId = this.serverId.copy();
         this.replicatorGroup.resetTerm(this.currTerm);
         // Start follower's replicators
+        // 为每一个Follower（追随者）设置一个Replicator；
         for (final PeerId peer : this.conf.listPeers()) {
             if (peer.equals(this.serverId)) {
                 continue;
@@ -1330,6 +1344,7 @@ public class NodeImpl implements Node, RaftServerService {
         }
 
         // Start learner's replicators
+        // 为每一个Learner（学习者）设置一个Replicator；
         for (final PeerId peer : this.conf.listLearners()) {
             LOG.debug("Node {} add a learner replicator, term={}, peer={}.", getNodeId(), this.currTerm, peer);
             if (!this.replicatorGroup.addReplicator(peer, ReplicatorType.Learner)) {
@@ -1338,13 +1353,18 @@ public class NodeImpl implements Node, RaftServerService {
         }
 
         // init commit manager
+        // 因为Leader在下台的时候会将最新日志的标致（pendingIndex=0），重置为0，表示在新Leader未产生之前不允许复制日志；
+        // 所以在Leader上线之后，将pendingIndex的设置为当前最新的日志+1，同时Follower也可以开始复制日志了；
         this.ballotBox.resetPendingIndex(this.logManager.getLastLogIndex() + 1);
         // Register _conf_ctx to reject configuration changing before the first log
         // is committed.
+        // 在提交第一个日志之前拒绝 _conf_ctx 配置更改；
         if (this.confCtx.isBusy()) {
             throw new IllegalStateException();
         }
+        // 将配置更改日志写入为第一个日志（成为Leader时的第一个日志）
         this.confCtx.flush(this.conf.getConf(), this.conf.getOldConf());
+        // 启动Leader下台的定时器
         this.stepDownTimer.start();
     }
 
@@ -2109,6 +2129,22 @@ public class NodeImpl implements Node, RaftServerService {
 
     /**
      * [SSS-Raft日志复制 关注方法]
+     *
+     * 探针（or心跳）请求流程概括：
+     *      1) 如果当前节点处于非活跃状态，则响应错误；
+     *      2) 否则，解析请求来源节点的serverId，如果解析失败则响应错误；
+     *      3) 否则，校验请求中的 term 值是否小于当前节点，如果是则拒绝请求；
+     *      4) 否则，基于请求和当前节点本地状态判断是否需要执行 stepDown 操作；
+     *      5) 判断请求来源节点是否是当前节点所认可的 Leader 节点，如果不是则说明可能出现网络分区，
+     *         尝试将响应中的 term 值加 1，以触发请求节点执行 stepDown 操作；
+     *      6) 否则，更新本地记录的最近一次收到来自 Leader 节点的时间戳；
+     *      7) 校验最近一次完成复制的 LogEntry 对应的 term 值是否与本地相匹配，如果不匹配则拒绝请求，并返回本地已知的最新 logIndex 值；
+     *      8) 否则，依据请求中的 committedIndex 值更新本地的 committedIndex 值，同时响应请求，返回本地已知的最新 logIndex 和 term 值。
+     *
+     * 复制日志数据：
+     * 源码解读 {@link LogManagerImpl#appendEntries(List, LogManager.StableClosure)
+     *      Follower节点调用，向节点追加日志数据的操作；
+     * }
      */
     @Override
     public Message handleAppendEntriesRequest(final AppendEntriesRequest request, final RpcRequestClosure done) {
@@ -2117,6 +2153,7 @@ public class NodeImpl implements Node, RaftServerService {
         this.writeLock.lock();
         final int entriesCount = request.getEntriesCount();
         try {
+            // 当前节点处于非活跃状态，响应错误
             if (!this.state.isActive()) {
                 LOG.warn("Node {} is not in active state, currTerm={}.", getNodeId(), this.currTerm);
                 return RpcFactoryHelper //
@@ -2125,6 +2162,7 @@ public class NodeImpl implements Node, RaftServerService {
                         "Node %s is not in active state, state %s.", getNodeId(), this.state.name());
             }
 
+            // 解析来源（协议参与者）节点信息：IP+端口，若解析失败则响应错误；
             final PeerId serverId = new PeerId();
             if (!serverId.parse(request.getServerId())) {
                 LOG.warn("Node {} received AppendEntriesRequest from {} serverId bad format.", getNodeId(),
@@ -2136,6 +2174,7 @@ public class NodeImpl implements Node, RaftServerService {
             }
 
             // Check stale term
+            // 若请求中的term值少于当前term，则拒绝请求，并返回当前最新的term值；
             if (request.getTerm() < this.currTerm) {
                 LOG.warn("Node {} ignore stale AppendEntriesRequest from {}, term={}, currTerm={}.", getNodeId(),
                     request.getServerId(), request.getTerm(), this.currTerm);
@@ -2146,7 +2185,10 @@ public class NodeImpl implements Node, RaftServerService {
             }
 
             // Check term and state to step down
+            // 基于请求中的term和本地节点状态，决策是否执行 stepDown；
             checkStepDown(request.getTerm(), serverId);
+            // 请求来源节点并不是当前节点已知的Leader节点，
+            // 可能已经发生网络分区，尝试将请求的 term+1，以触发Leader的stepDown；
             if (!serverId.equals(this.leaderId)) {
                 LOG.error("Another peer {} declares that it is the leader at term {} which was occupied by leader {}.",
                     serverId, this.currTerm, this.leaderId);
@@ -2160,8 +2202,11 @@ public class NodeImpl implements Node, RaftServerService {
                     .build();
             }
 
+            // 更新本地记录的最近一次收到来自 Leader 节点请求的时间戳
+            // 用于拒绝在一个非对称网络中，Follower与Leader节点失联，但与其它节点正常连接而导致Leader election timeout；
             updateLastLeaderTimestamp(Utils.monotonicMs());
 
+            // 当前是复制日志的请求，但是节点正在执行安装快照；响应错误（防止安装的快照覆盖新的committed）
             if (entriesCount > 0 && this.snapshotExecutor != null && this.snapshotExecutor.isInstallingSnapshot()) {
                 LOG.warn("Node {} received AppendEntriesRequest while installing snapshot.", getNodeId());
                 return RpcFactoryHelper //
@@ -2173,6 +2218,14 @@ public class NodeImpl implements Node, RaftServerService {
             final long prevLogIndex = request.getPrevLogIndex();
             final long prevLogTerm = request.getPrevLogTerm();
             final long localPrevLogTerm = this.logManager.getTerm(prevLogIndex);
+            // follower 日志落后于 Leader，
+            // 因为此时只有： request.getTerm() == this.currTerm，所以 localPrevLogTerm <= this.currTerm;
+            // 若 prevLogIndex > lastLogIndex，
+            //     说明localPrevLogTerm=0，RocksDB未把日志刷盘，机器挂了，丢失最近一部分数据；
+            // 若 prevLogIndex < lastLogIndex，
+            //     说明localPrevLogTerm!=0 && localPrevLogTerm < prevLogTerm，日志属于过期Leader，
+            //     原因是长期网络分区，产生了一个Leader，一直在appendEntries，但是quorum不满足，在连接之后此部分日志不允许committed，
+            //     需要保证强一致性，每行日志的term&logIndex必须一致；
             if (localPrevLogTerm != prevLogTerm) {
                 final long lastLogIndex = this.logManager.getLastLogIndex();
 
@@ -2188,6 +2241,7 @@ public class NodeImpl implements Node, RaftServerService {
                     .build();
             }
 
+            // 心跳或探针请求，返回本地当前的term值以及对应的最新 lastLogIndex；
             if (entriesCount == 0) {
                 // heartbeat or probe request
                 final AppendEntriesResponse.Builder respBuilder = AppendEntriesResponse.newBuilder() //
@@ -2197,11 +2251,14 @@ public class NodeImpl implements Node, RaftServerService {
                 doUnlock = false;
                 this.writeLock.unlock();
                 // see the comments at FollowerStableClosure#run()
+                // 基于 Leader 的 committedIndex 更新本地的 lastCommittedIndex 值
+                // Follower 调用，设置从 Leader收到的已提交的索引 committedIndex
                 this.ballotBox.setLastCommittedIndex(Math.min(request.getCommittedIndex(), prevLogIndex));
                 return respBuilder.build();
             }
 
             // Parse request
+            /* 复制数据日志请求 - start */
             long index = prevLogIndex;
             final List<LogEntry> entries = new ArrayList<>(entriesCount);
             ByteBuffer allData = null;

@@ -112,10 +112,27 @@ public class ReplicatorGroupImpl implements ReplicatorGroup {
         return this.replicatorMap.get(peer);
     }
 
+    /**
+     * [SSS-日志复制入口]，在Candidate成为Leader之后，Leader通过 复制器Replicator 与各个目标节点（Follower、Learner）建立关系；
+     * Replicator：复制日志和安装快照；
+     *
+     * 添加Leander节点到目标节点（Follower、Learner）的复制器 Replicator，建立节点之间的复制关系；
+     * 源码解读 - {@link Replicator#start(ReplicatorOptions, RaftOptions)
+     *     创建并启动到目标节点的复制器 Replicator 实例，
+     *     并返回一个ThreadId对象，用于为对应的 Replicator 对象提供不可重入锁支持，其中不可重入锁基于 AQS 实现。
+     * }
+     *
+     * @param peer           目标 Follower节点 or Learner节点
+     * @param replicatorType Follower or Learner
+     * @param sync           synchronous
+     * @return
+     */
     @Override
     public boolean addReplicator(final PeerId peer, final ReplicatorType replicatorType, final boolean sync) {
+        // 确保Leader已经调用 ReplicatorGroup#restTerm()方法重置term；
         Requires.requireTrue(this.commonOptions.getTerm() != 0);
         this.failureReplicators.remove(peer);
+        // 已经建立复制关系，避免重复
         if (this.replicatorMap.containsKey(peer)) {
             return true;
         }
@@ -130,6 +147,8 @@ public class ReplicatorGroupImpl implements ReplicatorGroup {
                 return false;
             }
         }
+        // 创建并启动节点到目标节点的复制器Replicator；
+        // 返回一个 ThreadId 对象，用于为对应的 Replicator 对象提供不可重入锁支持，其中不可重入锁基于 AQS 实现。
         final ThreadId rid = Replicator.start(opts, this.raftOptions);
         if (rid == null) {
             LOG.error("Fail to start replicator to peer={}, replicatorType={}.", peer, replicatorType);

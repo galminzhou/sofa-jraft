@@ -34,6 +34,7 @@ import com.google.protobuf.Message;
 public interface RaftServerService {
 
     /**
+     * 处理预选举投票（pre-vote）请求
      * Handle pre-vote request.
      *
      * @param request   data of the pre vote
@@ -42,6 +43,7 @@ public interface RaftServerService {
     Message handlePreVoteRequest(RequestVoteRequest request);
 
     /**
+     * 处理选举投票（rquest-vote）请求
      * Handle request-vote request.
      *
      * @param request   data of the vote
@@ -50,6 +52,7 @@ public interface RaftServerService {
     Message handleRequestVoteRequest(RequestVoteRequest request);
 
     /**
+     * 处理复制日志（append-entries）请求，通过响应返回响应消息或调用done.run()
      * Handle append-entries request, return response message or
      * called done.run() with response.
      *
@@ -60,6 +63,7 @@ public interface RaftServerService {
     Message handleAppendEntriesRequest(AppendEntriesRequest request, RpcRequestClosure done);
 
     /**
+     * 处理安装快照（install-snapshot），通过响应返回响应消息或调用done.run()
      * Handle install-snapshot request, return response message or
      * called done.run() with response.
      *
@@ -70,6 +74,7 @@ public interface RaftServerService {
     Message handleInstallSnapshot(InstallSnapshotRequest request, RpcRequestClosure done);
 
     /**
+     * TODO 处理time-out-now 请求，通过响应返回 响应消息或调用done.run()
      * Handle time-out-now request, return response message or
      * called done.run() with response.
      *
@@ -80,6 +85,7 @@ public interface RaftServerService {
     Message handleTimeoutNowRequest(TimeoutNowRequest request, RpcRequestClosure done);
 
     /**
+     * 处理线性一致性读（read-index）请求
      * Handle read-index request, call the RPC closure with response.
      *
      * @param request   data of the readIndex read

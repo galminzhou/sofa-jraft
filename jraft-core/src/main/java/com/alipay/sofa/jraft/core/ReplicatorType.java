@@ -17,6 +17,9 @@
 package com.alipay.sofa.jraft.core;
 
 /**
+ * Follower：参与投票，可参与Leader选举（分配权重不为-1）；
+ * Learner：不参与投票，不参与选举，其它与Follower 一致；
+ *
  * 从 1.3.0 版本开始，
  * SOFAJRaft 引入了只读成员（学习者：Learner）支持，
  * 只读的节点类似 Follower，将从 Leader 复制日志并应用到本地状态机，
