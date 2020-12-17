@@ -1195,6 +1195,7 @@ public class LogManagerImpl implements LogManager {
     private long notifyOnNewLog(final long expectedLastLogIndex, final WaitMeta wm) {
         this.writeLock.lock();
         try {
+            // 已经有新的日志数据可以被复制 或者 当前LogManager已经被停止了
             if (expectedLastLogIndex != this.lastLogIndex || this.stopped) {
                 wm.errorCode = this.stopped ? RaftError.ESTOP.getNumber() : 0;
                 Utils.runInThread(() -> runOnNewLog(wm));
@@ -1204,6 +1205,7 @@ public class LogManagerImpl implements LogManager {
                 ++this.nextWaitId;
             }
             final long waitId = this.nextWaitId++;
+            // 记录等待的信息
             this.waitMap.put(waitId, wm);
             return waitId;
         } finally {

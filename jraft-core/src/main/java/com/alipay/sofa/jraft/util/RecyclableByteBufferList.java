@@ -30,6 +30,9 @@ public final class RecyclableByteBufferList extends ArrayList<ByteBuffer> implem
 
     private transient final Recyclers.Handle                 handle;
 
+    /** 创建一个最大容量是：512的 Recyclers实例
+     *  在Stack中 DefaultHandle数组的长度，最大允许扩容数值；
+     */
     private static final Recyclers<RecyclableByteBufferList> recyclers = new Recyclers<RecyclableByteBufferList>(512) {
         @Override
         protected RecyclableByteBufferList newObject(final Handle handle) {

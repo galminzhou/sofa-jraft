@@ -2142,6 +2142,9 @@ public class NodeImpl implements Node, RaftServerService {
      *      8) 否则，依据请求中的 committedIndex 值更新本地的 committedIndex 值，同时响应请求，返回本地已知的最新 logIndex 和 term 值。
      *
      * 复制日志数据：
+     * 源码解读 {@link NodeImpl#logEntryFromMeta(long, ByteBuffer, RaftOutter.EntryMeta)
+     *      Follower 节点会基于请求中的 LogEntry 元数据和数据体信息逐一解析构造对应的 LogEntry 对象；
+     * }
      * 源码解读 {@link LogManagerImpl#appendEntries(List, LogManager.StableClosure)
      *      Follower节点调用，向节点追加日志数据的操作；
      * }
@@ -2267,14 +2270,17 @@ public class NodeImpl implements Node, RaftServerService {
             }
 
             final List<RaftOutter.EntryMeta> entriesList = request.getEntriesList();
+            // 遍历逐一解析请求中的 LogEntry 数据，记录到 entries 列表中
             for (int i = 0; i < entriesCount; i++) {
                 index++;
+                // 获取 LogEntry 元数据信息
                 final RaftOutter.EntryMeta entry = entriesList.get(i);
-
+                // 基于元数据和数据体构造 LogEntry 对象
                 final LogEntry logEntry = logEntryFromMeta(index, allData, entry);
 
                 if (logEntry != null) {
                     // Validate checksum
+                    // 是否启用checksum机制，若启用则checksum，失败则打印日志返回错误；
                     if (this.raftOptions.isEnableLogEntryChecksum() && logEntry.isCorrupted()) {
                         long realChecksum = logEntry.checksum();
                         LOG.error(
@@ -2294,6 +2300,7 @@ public class NodeImpl implements Node, RaftServerService {
 
             final FollowerStableClosure closure = new FollowerStableClosure(request, AppendEntriesResponse.newBuilder()
                 .setTerm(this.currTerm), this, done, this.currTerm);
+            // Follower 调用 appendEntries，将 LogEntry 数据写入本地磁盘
             this.logManager.appendEntries(entries, closure);
             // update configuration after _log_manager updated its memory status
             checkAndSetConfiguration(true);
@@ -2308,13 +2315,16 @@ public class NodeImpl implements Node, RaftServerService {
     }
 
     private LogEntry logEntryFromMeta(final long index, final ByteBuffer allData, final RaftOutter.EntryMeta entry) {
+        // 忽略 ENTRY_TYPE_UNKNOWN 类型的 LogEntry 数据
         if (entry.getType() != EnumOutter.EntryType.ENTRY_TYPE_UNKNOWN) {
+            // 给 LogEntry 对象填充基本的元数据信息
             final LogEntry logEntry = new LogEntry();
             logEntry.setId(new LogId(index, entry.getTerm()));
             logEntry.setType(entry.getType());
             if (entry.hasChecksum()) {
                 logEntry.setChecksum(entry.getChecksum()); // since 1.2.6
             }
+            // 基于元数据中记录的数据长度获取对应的 LogEntry 数据体，并填充到 LogEntry 对象中
             final long dataLen = entry.getDataLen();
             if (dataLen > 0) {
                 final byte[] bs = new byte[(int) dataLen];
@@ -2323,6 +2333,7 @@ public class NodeImpl implements Node, RaftServerService {
                 logEntry.setData(ByteBuffer.wrap(bs));
             }
 
+            // 针对 ENTRY_TYPE_CONFIGURATION 类型的 LogEntry，解析并填充集群节点配置数据
             if (entry.getPeersCount() > 0) {
                 if (entry.getType() != EnumOutter.EntryType.ENTRY_TYPE_CONFIGURATION) {
                     throw new IllegalStateException(
@@ -2330,6 +2341,7 @@ public class NodeImpl implements Node, RaftServerService {
                                 + entry.getType());
                 }
 
+                // 填充集群节点配置信息
                 fillLogEntryPeers(entry, logEntry);
             } else if (entry.getType() == EnumOutter.EntryType.ENTRY_TYPE_CONFIGURATION) {
                 throw new IllegalStateException(

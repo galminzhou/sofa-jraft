@@ -31,7 +31,7 @@ import org.slf4j.LoggerFactory;
  *    每一个线程对象包含一个 Map<Stack<?>, WeakOrderQueue>，存储着为其他线程创建的 WeakOrderQueue 对象，
  *    WeakOrderQueue 对象中存储一个以 Head 为首的 Link 数组，每个 Link 对象中存储一个 DefaultHandle[] 数组，用于存放回收对象。
  *
- *
+ *  https://www.jianshu.com/p/854b855bd198
  *
  * Light-weight object pool based on a thread-local stack.
  * <p/>
@@ -43,11 +43,29 @@ public abstract class Recyclers<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(Recyclers.class);
 
+    /** 唯一ID生成器；<br>
+     * 两处使用：1）当前的线程ID；2）WeakOrderQueue的ID； */
     private static final AtomicInteger idGenerator = new AtomicInteger(Integer.MIN_VALUE);
 
+    /** 生成并获取一个唯一ID；用于pushNow()中的item.recycleId和item.lastRecycleId的设定 */
     private static final int OWN_THREAD_ID = idGenerator.getAndIncrement();
     private static final int DEFAULT_INITIAL_MAX_CAPACITY_PER_THREAD = 4 * 1024; // Use 4k instances as default.
+    /**
+     * 每个 Stack 默认的最大容量；默认是4 * 1024；
+     * 注意：
+     * 1）当maxCapacityPerThread==0时，禁用回收功能；（当maxCapacityPerThread < 0，则默认：4 * 1024）
+     * 2）Recyclers 中有且仅有两个地方存储DefaultHandle对象（Stack和Link）；
+     *
+     * 在Jraft中，可通过属性设置最多存储容量值：
+     * 1) JVM启动参数：-Djraft.recyclers.maxCapacityPerThread
+     * 2）在JRaft中通过构造器{@link Recyclers#Recyclers(int)}传入Stack容量，
+     *    但是，在构造器中设置的容量，不允许超过JVM启动参数或默认的值（4 * 1024）。
+     */
     private static final int MAX_CAPACITY_PER_THREAD;
+    /**
+     * 每个 Stack 初始值的默认的最大容量：默认是256，并且最大上限为256；
+     * 在使用中可通过扩容，INITIAL_CAPACITY <= MAX_CAPACITY_PER_THREAD；
+     */
     private static final int INITIAL_CAPACITY;
 
     static {
@@ -61,21 +79,22 @@ public abstract class Recyclers<T> {
 
         LOG.info("-Djraft.recyclers.maxCapacityPerThread: {}.", MAX_CAPACITY_PER_THREAD == 0 ? "disabled" : MAX_CAPACITY_PER_THREAD);
 
-        // 设置初始化容量信息（最小默认为256）
+        // 设置初始化容量信息（最大默认为256）
         INITIAL_CAPACITY = Math.min(MAX_CAPACITY_PER_THREAD, 256);
     }
 
+    /**
+     * 表示一个不需要回收的包装对象，用于在禁止使用Recycler功能时进行占位的功能；
+     * 当 recycler.maxCapacityPerThread == 0 时使用。
+     */
     public static final Handle NOOP_HANDLE = new Handle() {};
-
+    /**
+     * 在Stack中DefaultHandle数组长度最大值
+     */
     private final int maxCapacityPerThread;
     /** 线程变量，保存每个线程的对象池信息，通过ThreadLocal使用，避免不同线程之间的竞争;
-     * ThreadLocal<Map<Stack<?>, WeakOrderQueue>
-     * {@link Stack}{@link DefaultHandle}
-     * Stack:
-     *   -> DefaultHandle[]
-     *      DefaultHandle是真正存储对象的实例
+     *  当首次执行threadLocal.get() 时，会调用threadLocal#initialValue()来创建一个Stack对象。
      * */
-    //
     private final ThreadLocal<Stack<T>> threadLocal = new ThreadLocal<Stack<T>>() {
         @Override
         protected Stack<T> initialValue() {
@@ -93,22 +112,31 @@ public abstract class Recyclers<T> {
 
     @SuppressWarnings("unchecked")
     public final T get() {
+        /* 最大容量为0，禁止使用回收功能，
+           创建一个对象，其Recycler.Handle<T> handle属性为NOOP_HANDLE，
+           在 Recyclers#recycle(T, Handle) 中，若 handle == NOOP_HANDLE 则直接返回 false；*/
         if (maxCapacityPerThread == 0) {
             return newObject(NOOP_HANDLE);
         }
-        // 从ThreadLocal获取一个Stack对象（内部结构：DefaultHandle[]）
+        // 获取当前线程的Stack<T>对象，内部结构：DefaultHandle[]；
         Stack<T> stack = threadLocal.get();
         // 获取栈顶元素（DefaultHandle[this.size--]）
         DefaultHandle handle = stack.pop();
         // 若栈顶不存在元素（DefaultHandle[this.size--] == null），则实例化一个DefaultHandle
         if (handle == null) {
+            // 新建一个DefaultHandle对象 -> 然后新建T对象 -> 存储到DefaultHandle对象
+            // 一个DefaultHandle对象对应一个Object对象（子类实现newObject(handle)）,
             handle = stack.newHandle();
             handle.value = newObject(handle);
         }
         return (T) handle.value;
     }
 
+    /**
+     * 回收对象；
+     */
     public final boolean recycle(T o, Handle handle) {
+        // 不回收操作类型（maxCapacityPerThread == 0）
         if (handle == NOOP_HANDLE) {
             return false;
         }
@@ -120,7 +148,7 @@ public abstract class Recyclers<T> {
             throw new IllegalStateException("recycled already");
         }
 
-        // 因在构建Stack实例时，使用Recyclers.this作为parent，若是不相等则表示不是同一个对象，
+        // 因在构建Stack实例时，使用Recyclers.this作为parent，若是不相等则表示不是同一个对象
         if (stack.parent != this) {
             return false;
         }
@@ -132,6 +160,10 @@ public abstract class Recyclers<T> {
         return true;
     }
 
+    /**
+     * 1）钩子方法，创建一个对象，由子类实现；
+     * 2）传入Handle对象，对创建出来的对象进行回收操作
+     */
     protected abstract T newObject(Handle handle);
 
     public final int threadLocalCapacity() {
@@ -142,6 +174,10 @@ public abstract class Recyclers<T> {
         return threadLocal.get().size;
     }
 
+    /**
+     * 提供对象的回收功能
+     * 目前该接口只有两个实现：NOOP_HANDLE和DefaultHandle；
+     */
     public interface Handle {}
 
     static final class DefaultHandle implements Handle {
@@ -174,11 +210,12 @@ public abstract class Recyclers<T> {
             Thread thread = Thread.currentThread();
 
             final Stack<?> stack = this.stack;
+            // Recycler对象做防护性检测
             if (lastRecycledId != recycleId || stack == null) {
                 throw new IllegalStateException("recycled already");
             }
 
-            //如果当前线程正好等于stack所对应的线程，那么直接push进去
+            // Stack检测当前线程是否是创建Stack的线程，若是则调用stack#push(this)；
             if (thread == stack.thread) {
                 stack.push(this);
                 return;
@@ -186,7 +223,8 @@ public abstract class Recyclers<T> {
             // we don't want to have a ref to the queue as the value in our weak map
             // so we null it out; to ensure there are no races with restoring it later
             // we impose a memory ordering here (no-op on x86)
-            // 如果不是当前线程，则需要延迟回收，获取当前线程存储的延迟回收WeakHashMap
+            // 不是Stack的创建线程执行回收，执行异线程（延迟）回收逻辑
+            // 获取当前线程存储的延迟回收WeakHashMap
             Map<Stack<?>, WeakOrderQueue> delayedRecycled = Recyclers.delayedRecycled.get();
             // 当前 handler 所在的 stack 是否已经在延迟回收的任务队列中
             // 并且 WeakOrderQueue是一个多线程间可以共享的Queue
@@ -227,8 +265,15 @@ public abstract class Recyclers<T> {
         // pointer to another queue of delayed items for the same stack
         /** 指向下一个WeakOrderQueue的指针 */
         private WeakOrderQueue next;
-        /** 使用的是WeakReference ，作用是在poll的时候，如果owner不存在了
-            则需要将该线程所包含的WeakOrderQueue的元素释放，然后从链表中删除该Queue。 */
+        /** Stack的所属线程
+         *  使用软引用 WeakReference，作用是在pop调用{@link Stack#scavengeSome()}的时候，
+         *  若该线程对象在外界已经没有强引用了，即owner不存在了，
+         *  那么则需要将该线程所包含的WeakOrderQueue的元素释放（回收），然后从链表中删除此Queue；
+         *
+         *  如果此处用的是强引用，那么虽然外界不再对该线程有强引用，
+         *  但是该stack对象还持有强引用（假设开发人员存储了DefaultHandle对象，然后一直不释放，而DefaultHandle对象又持有stack引用），
+         *  导致该线程对象无法释放。
+         */
         private final WeakReference<Thread> owner;
         private final int id = idGenerator.getAndIncrement();
 
@@ -379,9 +424,12 @@ public abstract class Recyclers<T> {
         final Recyclers<T> parent;
         /** Stack所属主线程 */
         final Thread thread;
-        /** 存储DefaultHandle的数组，主线程回收的对象 */
+        /** Stack数据结构：使用DefaultHandle数组存储数据，主线程回收的对象 */
         private DefaultHandle[] elements;
+        /** elements数组最大长度 */
         private final int maxCapacity;
+        /** elements中的元素个数，同时也可作为操作数组的下标，
+            数组只有elements.length来计算数组容量的函数，没有计算当前数组中的元素个数的函数，所以需要记录 */
         private int size;
         /** 指向WeakOrderQueue元素组成的链表的头部“指针”，用于存放其他线程的对象，非主线程回收的对象 */
         private volatile WeakOrderQueue head;
@@ -395,6 +443,9 @@ public abstract class Recyclers<T> {
             elements = new DefaultHandle[Math.min(INITIAL_CAPACITY, maxCapacity)];
         }
 
+        /**
+         * 将DefaultHandle数组长度（翻倍）扩容至期望的容量，扩容上限 MAX_CAPACITY_PER_THREAD；
+         */
         int increaseCapacity(int expectedCapacity) {
             int newCapacity = elements.length;
             int maxCapacity = this.maxCapacity;
@@ -549,15 +600,13 @@ public abstract class Recyclers<T> {
         }
 
         /**
-         * 同线程回收对象 DefaultHandle#recycle 步骤：
+         * 同线程回收对象 DefaultHandle#recycle 步骤（Stack 主线程执行回收逻辑）：
          *
-         * 1) stack 先检测当前的线程是否是创建 stack 的线程，如果不是，则走异线程回收逻辑；
-         *    如果是，则首先判断是否重复回收，然后判断 stack 的 DefaultHandle[] 中的元素个数是否已经超过最大容量（4k），如果是，直接返回；
-         * 2) 判断当前的 DefaultHandle[] 是否还有空位，如果没有，以 maxCapacity 为最大边界扩容 2 倍，
+         * 1) 首先判断是否重复回收，然后判断 stack 的 DefaultHandle[] 中的元素个数是否已经超过最大容量（4k），如果是，直接返回；
+         * 2) 如果不是，则计算当前元素是否需要回收，如果不需要回收，直接返回；
+         *    如果需要回收，则判断当前的 DefaultHandle[] 是否还有空位，如果没有，以 maxCapacity 为最大边界扩容 2 倍，
          *    之后拷贝旧数组的元素到新数组，然后将当前的 DefaultHandle 对象放置到 DefaultHandle[] 中；
          * 3) 最后重置 stack.size 属性；
-         *
-         * 异线程回收对象 DefaultHandle
          */
         void push(DefaultHandle item) {
             // (item.recycleId | item.lastRecycleId) != 0 等价于 item.recycleId!=0 && item.lastRecycleId!=0

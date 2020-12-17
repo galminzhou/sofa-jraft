@@ -17,6 +17,7 @@
 package com.alipay.sofa.jraft.core;
 
 import com.alipay.sofa.jraft.rpc.*;
+import com.alipay.sofa.jraft.storage.LogManager;
 import com.alipay.sofa.jraft.util.*;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
@@ -28,6 +29,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import java.util.concurrent.locks.Lock;
 import javax.annotation.concurrent.ThreadSafe;
 
 import org.slf4j.Logger;
@@ -813,20 +815,34 @@ public class Replicator implements ThreadId.OnError {
         }
     }
 
+    /**
+     * 根据偏移量计算得到最终的 logIndex 值，
+     * 然后调用 LogManagerImpl#getEntry 方法从文件系统加载获取到对应的 LogEntry 数据，
+     * 最后将 LogEntry 中的元数据和数据体拆分后分别填充到 EntryMeta 和 RecyclableByteBufferList 对象中。
+     *
+     * JRaft 默认采用 RocksDB 作为日志数据的存储引擎，其中 key 就是 LogEntry 对应的 logIndex 值，
+     * 所以方法 LogManagerImpl#getEntry 的执行过程简单来说就是依据 logIndex 从 内存中获取，内存中没有则从RocksDB 中获取对应数据的过程。
+     */
     boolean prepareEntry(final long nextSendingIndex, final int offset, final RaftOutter.EntryMeta.Builder emb,
                          final RecyclableByteBufferList dateBuffer) {
+        // 数据量已经超过阈值
         if (dateBuffer.getCapacity() >= this.raftOptions.getMaxBodySize()) {
             return false;
         }
+        // 基于偏移量计算当前处理的 LogEntry 的 logIndex 值
         final long logIndex = nextSendingIndex + offset;
+        // 从本地获取对应的 LogEntry 数据
         final LogEntry entry = this.options.getLogManager().getEntry(logIndex);
         if (entry == null) {
             return false;
         }
+        // 将 LogEntry 拆分为元数据和数据体分别填充 EntryMeta 和 RecyclableByteBufferList
         emb.setTerm(entry.getId().getTerm());
+        // 设置 checksum
         if (entry.hasChecksum()) {
             emb.setChecksum(entry.getChecksum()); // since 1.2.6
         }
+        // 设置 LogEntry 类型
         emb.setType(entry.getType());
         if (entry.getPeers() != null) {
             Requires.requireTrue(!entry.getPeers().isEmpty(), "Empty peers at logIndex=%d", logIndex);
@@ -835,8 +851,10 @@ public class Replicator implements ThreadId.OnError {
             Requires.requireTrue(entry.getType() != EnumOutter.EntryType.ENTRY_TYPE_CONFIGURATION,
                 "Empty peers but is ENTRY_TYPE_CONFIGURATION type at logIndex=%d", logIndex);
         }
+        // 设置数据长度
         final int remaining = entry.getData() != null ? entry.getData().remaining() : 0;
         emb.setDataLen(remaining);
+        // 填充数据到 dataBuffer
         if (entry.getData() != null) {
             // should slice entry data
             dateBuffer.add(entry.getData().slice());
@@ -992,15 +1010,18 @@ public class Replicator implements ThreadId.OnError {
     }
 
     static boolean continueSending(final ThreadId id, final int errCode) {
+        // 当前 Replicator 已经被销毁
         if (id == null) {
             //It was destroyed already
             return true;
         }
+        // 获取与当前 Replicator 绑定的不可重入锁
         final Replicator r = (Replicator) id.lock();
         if (r == null) {
             return false;
         }
         r.waitId = -1;
+        // 超时，再次发送探针请求
         if (errCode == RaftError.ETIMEDOUT.getNumber()) {
             r.blockTimer = null;
             // Send empty entries after block timeout to check the correct
@@ -1008,10 +1029,14 @@ public class Replicator implements ThreadId.OnError {
             // _wait_more_entries and no further logs would be replicated even if the
             // last_index of this followers is less than |next_index - 1|
             r.sendEmptyEntries(false);
-        } else if (errCode != RaftError.ESTOP.getNumber()) {
+        }
+        // LogManager 正常运行，继续尝试向目标 Follower 节点发送数据
+        else if (errCode != RaftError.ESTOP.getNumber()) {
             // id is unlock in _send_entries
             r.sendEntries();
-        } else {
+        }
+        // LogManager 被停止，停止向目标节点发送日志数据
+        else {
             LOG.warn("Replicator {} stops sending entries.", id);
             id.unlock();
         }
@@ -1643,9 +1668,11 @@ public class Replicator implements ThreadId.OnError {
     private void waitMoreEntries(final long nextWaitIndex) {
         try {
             LOG.debug("Node {} waits more entries", this.options.getNode().getNodeId());
+            // 已经设置过等待
             if (this.waitId >= 0) {
                 return;
             }
+            // 设置一个回调，当有可复制日志时触发再次往目标 Follower 节点发送数据
             this.waitId = this.options.getLogManager().wait(nextWaitIndex - 1,
                 (arg, errorCode) -> continueSending((ThreadId) arg, errorCode), this.id);
             this.statInfo.runningState = RunningState.IDLE;
@@ -1713,22 +1740,42 @@ public class Replicator implements ThreadId.OnError {
      * 实现上使用 RecyclableByteBufferList 作为数据体的载体，
      * RecyclableByteBufferList 可以看做是一个可回收利用的 ByteBuffer 链表，实现层面借鉴了 Netty 的轻量级对象池的设计思想。
      *
-     * 从本地加载日志数据并填充 AppendEntries 请求的过程实现：
+     * 从本地加载日志数据并填充 AppendEntries 请求：
      * 源码解读 {@link Replicator#prepareEntry(long, int, RaftOutter.EntryMeta.Builder, RecyclableByteBufferList)
-     *
+     *      根据 logIndex，首先从内存中（{@link com.alipay.sofa.jraft.storage.impl.LogManagerImpl#logsInMemory}）获取LogEntry，
+     *      若在 内存（logsInMemory）无法获取，则通过 RocksDB 获取数据；
+     *      然后将 LogEntry 中的元数据和数据体拆分后分别填充到 EntryMeta 和 RecyclableByteBufferList 对象中；
      * }
+     * 1) 获取单批发送的上限，若待发送的数据为空，安装快照（append-entries counter == 0 and nextSendingIndex < firstLogIndex）
+     *    源码解读 {@link Replicator#installSnapshot()
      *
-     * 获取单批发送的上限，若待发送的数据为空，则设置一个回调等待数据到来之后重新触发：
-     * 源码解读 {@link Replicator#waitMoreEntries(long)
+     *    }
+     * 2) 获取单批发送的上限，若待发送的数据为空，则设置一个回调等待数据到来之后重新触发（append-entries counter == 0 and nextSendingIndex >=firstLogIndex）
+     *    源码解读 {@link Replicator#waitMoreEntries(long)
+     *        通过NewLogCallback设置一个回调，通过LogManagerImpl#waitMap缓存{@link LogManager.NewLogCallback}实例，
+     *        当Leader 接受到新的 append-entries 请求，在数据更新到内存成功之后，进行唤醒通知调用{@link Replicator#continueSending(ThreadId, int)}，
+     *        再次往目标 Follower 节点发送数据。
+     *    }
+     * 3) 发送异步RPC请求（append-entries counter != 0）
+     *    日志数据写入磁盘是一个异步的过程，当日志数据成功在 Follower 节点落盘之后，Follower 节点会向 Leader 节点发送 AppendEntries 响应。
+     *    1）Leader 异步 PRC请求：
+     *    源码解读 {@link RaftClientService#appendEntries(Endpoint, AppendEntriesRequest, int, RpcResponseClosure)
      *
-     * }
+     *    }
+     *    2）Follower or Learner 接收 RPC请求：
+     *    源码解读 {@link NodeImpl#handleAppendEntriesRequest(AppendEntriesRequest, RpcRequestClosure)
+     *    }
      *
-     * 源码解读 {@link RaftClientService#appendEntries(Endpoint, AppendEntriesRequest, int, RpcResponseClosure)
+     *    3）Leader 标记RPC请求并记录到Inflight队列（Pipeline - 标记阶段）：
+     *    源码解读 {@link Replicator#addInflight(RequestType, long, int, int, int, Future)
+     *    }
      *
-     * }
-     *
-     * 源码解读 {@link Replicator#addInflight(RequestType, long, int, int, int, Future)
-     * }
+     *    4）Leader 接收 Follower的RPC请求响应（Pipeline - 处理阶段）：
+     *      a) 忽略；
+     *      b) 重置，再次发送探针请求；
+     *      c) 成功，通过投票箱决策是否commit，更新lastLogIndex 等；
+     *    源码解读 {@link Replicator#onRpcReturned(ThreadId, RequestType, Status, Message, Message, int, int, long)
+     *    }
      *
      * Send log entries to follower, returns true when success, otherwise false and unlock the id.
      *
@@ -1753,13 +1800,15 @@ public class Replicator implements ThreadId.OnError {
             for (int i = 0; i < maxEntriesSize; i++) {
                 final RaftOutter.EntryMeta.Builder emb = RaftOutter.EntryMeta.newBuilder();
                 // 获取指定 logIndex 的 LogEntry 数据，填充到 emb 和 byteBufList 中，
-                // 如果返回 false 说明容量已满
+                // 如果返回 false ，数据容量已超过阈值 or 未获取到数据，否则继续填充；
                 if (!prepareEntry(nextSendingIndex, i, emb, byteBufList)) {
                     break;
                 }
                 rb.addEntries(emb.build());
             }
-            // 未获取到任何 LogEntry 数据，可能目标数据已经变为快照了，也可能是真的没有数据可以复制
+            // 未获取到任何 LogEntry 数据，
+            //   1）可能目标数据已经变为快照了，执行安装快照
+            //   2）可能是真的没有数据可以复制，等待数据到来
             if (rb.getEntriesCount() == 0) {
                 // nextSendingIndex < firstLogIndex，说明对应区间的数据已变为快照，需要先给目标节点安装快照
                 if (nextSendingIndex < this.options.getLogManager().getFirstLogIndex()) {
