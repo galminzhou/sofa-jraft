@@ -574,7 +574,27 @@ public class Replicator implements ThreadId.OnError {
         }
     }
 
+    /**
+     * [SSS-安装快照入口]
+     * 参考 https://www.colabug.com/2020/0902/7666566/
+     *
+     * Replicator 期望给目标 Follower 节点复制日志数据时发现对应 logIndex 的数据已经变为快照文件，所以需要先给目标 Follower 节点安装快照。
+     *
+     * 1) 如果当前正在给目标 Follower 或 Learner 节点安装快照文件，则直接返回；
+     * 2) 否则，构造安装快照 InstallSnapshot RPC 请求对象，除了填充基本的状态数据外，其中还包含快照的远程访问地址，以及快照的元数据信息；
+     * 3) 向目标节点发送安装快照的请求。
+     *
+     * 向目标节点发生安装快照请求: 源码解读 {@link RaftClientService#installSnapshot(Endpoint, InstallSnapshotRequest, RpcResponseClosure)
+     * }
+     * 目标节点接收到安装快照: 源码解读 {@link NodeImpl#handleInstallSnapshot(InstallSnapshotRequest, RpcRequestClosure)
+     *      基本的状态校验（参考：append-entries），若通过则调用 installSnapshot；
+     * }
+     * 目标节点接收并且在leader、Follower和term等系列校验通过:
+     * 源码解读 {@link com.alipay.sofa.jraft.storage.snapshot.SnapshotExecutorImpl#installSnapshot(InstallSnapshotRequest, InstallSnapshotResponse.Builder, RpcRequestClosure)
+     * }
+     */
     void installSnapshot() {
+        // 正在给目标 Follower 节点安装快照，无需重复执行
         if (this.state == State.Snapshot) {
             LOG.warn("Replicator {} is installing snapshot, ignore the new request.", this.options.getPeerId());
             this.id.unlock();
@@ -585,6 +605,7 @@ public class Replicator implements ThreadId.OnError {
             Requires.requireTrue(this.reader == null,
                 "Replicator %s already has a snapshot reader, current state is %s", this.options.getPeerId(),
                 this.state);
+            // 创建并初始化快照读取器，具体实现为 LocalSnapshotReader 类
             this.reader = this.options.getSnapshotStorage().open();
             if (this.reader == null) {
                 final NodeImpl node = this.options.getNode();
@@ -595,6 +616,7 @@ public class Replicator implements ThreadId.OnError {
                 node.onError(error);
                 return;
             }
+            // 生一个快照访问地址
             final String uri = this.reader.generateURIForCopy();
             if (uri == null) {
                 final NodeImpl node = this.options.getNode();
@@ -606,6 +628,7 @@ public class Replicator implements ThreadId.OnError {
                 node.onError(error);
                 return;
             }
+            // 加载快照元数据信息
             final RaftOutter.SnapshotMeta meta = this.reader.load();
             if (meta == null) {
                 final String snapshotPath = this.reader.getPath();
@@ -618,6 +641,7 @@ public class Replicator implements ThreadId.OnError {
                 node.onError(error);
                 return;
             }
+            // 构造安装快照请求
             final InstallSnapshotRequest.Builder rb = InstallSnapshotRequest.newBuilder();
             rb.setTerm(this.options.getTerm());
             rb.setGroupId(this.options.getGroupId());
@@ -631,12 +655,15 @@ public class Replicator implements ThreadId.OnError {
             this.statInfo.lastTermIncluded = meta.getLastIncludedTerm();
 
             final InstallSnapshotRequest request = rb.build();
+            // 标记当前运行状态为正在给目标节点安装快照
             this.state = State.Snapshot;
             // noinspection NonAtomicOperationOnVolatileField
             this.installSnapshotCounter++;
             final long monotonicSendTimeMs = Utils.monotonicMs();
             final int stateVersion = this.version;
+            // 递增请求序列
             final int seq = getAndIncrementReqSeq();
+            // 向目标节点发送安装快照请求
             final Future<Message> rpcFuture = this.rpcService.installSnapshot(this.options.getPeerId().getEndpoint(),
                 request, new RpcResponseClosureAdapter<InstallSnapshotResponse>() {
 
@@ -646,6 +673,7 @@ public class Replicator implements ThreadId.OnError {
                             stateVersion, monotonicSendTimeMs);
                     }
                 });
+            // 标记当前请求为 in-flight
             addInflight(RequestType.Snapshot, this.nextIndex, 0, 0, seq, rpcFuture);
         } finally {
             if (doUnlock) {
@@ -659,6 +687,7 @@ public class Replicator implements ThreadId.OnError {
                                              final InstallSnapshotRequest request,
                                              final InstallSnapshotResponse response) {
         boolean success = true;
+        // 关闭快照数据读取器
         r.releaseReader();
         // noinspection ConstantConditions
         do {
@@ -677,6 +706,7 @@ public class Replicator implements ThreadId.OnError {
                 success = false;
                 break;
             }
+            // 目标 Follower 节点拒绝本次安装快照的请求
             if (!response.getSuccess()) {
                 sb.append(" success=false");
                 LOG.info(sb.toString());
@@ -684,12 +714,14 @@ public class Replicator implements ThreadId.OnError {
                 break;
             }
             // success
+            // 目标 Follower 节点成功处理本次安装快照的请求，更新 nextIndex
             r.nextIndex = request.getMeta().getLastIncludedIndex() + 1;
             sb.append(" success=true");
             LOG.info(sb.toString());
         } while (false);
         // We don't retry installing the snapshot explicitly.
         // id is unlock in sendEntries
+        // 给目标节点安装快照失败，清空 inflight 请求，重新发送探针请求
         if (!success) {
             //should reset states
             r.resetInflights();
@@ -698,6 +730,7 @@ public class Replicator implements ThreadId.OnError {
             return false;
         }
         r.hasSucceeded = true;
+        // 回调 CatchUpClosure
         r.notifyOnCaughtUp(RaftError.SUCCESS.getNumber(), false);
         if (r.timeoutNowIndex > 0 && r.timeoutNowIndex < r.nextIndex) {
             r.sendTimeoutNow(false, false);

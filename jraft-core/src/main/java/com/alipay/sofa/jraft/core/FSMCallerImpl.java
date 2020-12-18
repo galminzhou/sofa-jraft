@@ -552,6 +552,7 @@ public class FSMCallerImpl implements FSMCaller {
     private void doSnapshotSave(final SaveSnapshotClosure done) {
         Requires.requireNonNull(done, "SaveSnapshotClosure is null");
         final long lastAppliedIndex = this.lastAppliedIndex.get();
+        // 构造快照元数据信息，封装当前被状态机应用的 LogEntry 的 logIndex 和 term 值，以及对应的集群节点配置信息
         final RaftOutter.SnapshotMeta.Builder metaBuilder = RaftOutter.SnapshotMeta.newBuilder() //
             .setLastIncludedIndex(lastAppliedIndex) //
             .setLastIncludedTerm(this.lastAppliedTerm);
@@ -576,11 +577,13 @@ public class FSMCallerImpl implements FSMCaller {
                 metaBuilder.addOldLearners(peer.toString());
             }
         }
+        // 记录快照元数据
         final SnapshotWriter writer = done.start(metaBuilder.build());
         if (writer == null) {
             done.run(new Status(RaftError.EINVAL, "snapshot_storage create SnapshotWriter failed"));
             return;
         }
+        // 调用状态机 StateMachine#onSnapshotSave 方法生成快照
         this.fsm.onSnapshotSave(writer, done);
     }
 

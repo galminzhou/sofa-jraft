@@ -131,6 +131,7 @@ public interface  LogManager extends Lifecycle<LogManagerOptions>, Describer {
     void appendEntries(final List<LogEntry> entries, StableClosure done);
 
     /**
+     * 最近的数据已经被快照，则表示对应的原生日志文件可以从本地存储系统中删除，从而节省存储空间。
      * Notify the log manager about the latest snapshot, which indicates the
      * logs which can be safely truncated.
      *

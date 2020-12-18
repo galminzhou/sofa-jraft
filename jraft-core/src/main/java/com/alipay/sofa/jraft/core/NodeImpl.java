@@ -636,9 +636,13 @@ public class NodeImpl implements Node, RaftServerService {
         return true;
     }
 
+    /**
+     * [SSS-周期性生成快照（默认周期为 1 小时）），由快照计时器调用]
+     */
     private void handleSnapshotTimeout() {
         this.writeLock.lock();
         try {
+            // 当前节点是否处于活跃状态，非活跃状态结束；
             if (!this.state.isActive()) {
                 return;
             }
@@ -646,6 +650,7 @@ public class NodeImpl implements Node, RaftServerService {
             this.writeLock.unlock();
         }
         // do_snapshot in another thread to avoid blocking the timer thread.
+        // 节点处于活跃状态，异步调用SnapshotExecutor 生成快照
         Utils.runInThread(() -> doSnapshot(null));
     }
 
@@ -1831,7 +1836,7 @@ public class NodeImpl implements Node, RaftServerService {
             /**
              * 尝试将事件发布至缓冲区（RingBuffer）Disruptor队列进行异步处理，若指定容量不可用，则返回false，最大重试次数为3次；
              * 当事件在RingBuffer可用时，Disruptor 队列设置了一个回调的接口函数（EventHandler<T>）用于消费Disruptor队列中的事件；
-             * 源码解读- {@link LogEntryAndClosureHandler#onEvent(LogEntryAndClosure, long, boolean)} 消费Disruptor队列事件}
+             * 源码解读 {@link LogEntryAndClosureHandler#onEvent(LogEntryAndClosure, long, boolean)} 消费Disruptor队列事件}
              *
              * */
             while (true) {

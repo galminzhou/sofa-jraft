@@ -98,6 +98,10 @@ public interface StateMachine {
      * 通常情况下，每次 `onSnapshotSave` 被调用都应该阻塞状态机（同步调用）以保证用户可以捕获当前状态机的状态，
      * 如果想通过异步 snapshot 来提升性能，那么需要用户状态机支持快照读，并先同步读快照，再异步保存快照数据。
      *
+     * 如果生成快照成功，需要调用 SnapshotWriter#addFile
+     * 方法将快照文件名和对应的元数据信息记录到快照元数据信息表中。
+     * 这么做的目的除了能够让 JRaft 识别该快照文件，业务也可以在后续安装快照文件时读取到快照的元数据信息。
+     *
      * User defined snapshot generate function, this method will block StateMachine#onApply(Iterator).
      * user can make snapshot async when fsm can be cow(copy-on-write).
      * call done.run(status) when snapshot finished.

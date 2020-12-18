@@ -126,10 +126,12 @@ public class CounterStateMachine extends StateMachineAdapter {
     @Override
   public void onSnapshotSave(final SnapshotWriter writer, final Closure done) {
     final long currVal = this.value.get();
+    // 异步将数据落盘
     Utils.runInThread(() -> {
       final CounterSnapshotFile snapshot = new CounterSnapshotFile(writer.getPath() + File.separator + "data");
       if (snapshot.save(currVal)) {
-        if (writer.addFile("data")) {
+          // 记录快照文件名，及其元数据信息
+          if (writer.addFile("data")) {
           done.run(Status.OK());
         } else {
           done.run(new Status(RaftError.EIO, "Fail to add file to writer"));

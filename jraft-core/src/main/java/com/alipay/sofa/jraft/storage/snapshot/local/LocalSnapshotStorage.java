@@ -337,14 +337,17 @@ public class LocalSnapshotStorage implements SnapshotStorage {
 
     @Override
     public SnapshotCopier startToCopyFrom(final String uri, final SnapshotCopierOptions opts) {
+        // 新建快照数据拷贝器，用于从 Leader 节点往本地拷贝快照数据
         final LocalSnapshotCopier copier = new LocalSnapshotCopier();
         copier.setStorage(this);
         copier.setSnapshotThrottle(this.snapshotThrottle);
         copier.setFilterBeforeCopyRemote(this.filterBeforeCopyRemote);
+        // 初始化
         if (!copier.init(uri, opts)) {
             LOG.error("Fail to init copier to {}.", uri);
             return null;
         }
+        // 开始异步拷贝数据
         copier.start();
         return copier;
     }
