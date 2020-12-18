@@ -150,16 +150,21 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
          */
         @Override
         public void run(final Status status) {
+            // 响应异常，说明 Leader 节点本地的 lastCommittedIndex 值无效，
+            // 或者当前请求节点不是一个有效节点，或者节点状态不能够响应当前请求
             if (!status.isOk()) {
+                // 快速失败
                 notifyFail(status);
                 return;
             }
             final ReadIndexResponse readIndexResponse = getResponse();
+            // 响应失败，说明 Leader 节点的 LEADER 角色无效
             if (!readIndexResponse.getSuccess()) {
                 notifyFail(new Status(-1, "Fail to run ReadIndex task, maybe the leader stepped down."));
                 return;
             }
             // Success
+            // 为各个 ReadIndex 请求填充从 Leader 节点读取到的 lastCommittedIndex 值
             final ReadIndexStatus readIndexStatus = new ReadIndexStatus(this.states, this.request,
                 readIndexResponse.getIndex());
             for (final ReadIndexState state : this.states) {
@@ -170,12 +175,18 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
             boolean doUnlock = true;
             ReadOnlyServiceImpl.this.lock.lock();
             try {
+                // 本地已经应用的 LogEntry 的 logIndex 已经超过 lastCommittedIndex 位置，
+                // 说明就 lastCommittedIndex 位置而言，此位置之前的数据已经能够保证与 Leader 节点同步
                 if (readIndexStatus.isApplied(ReadOnlyServiceImpl.this.fsmCaller.getLastAppliedIndex())) {
                     // Already applied, notify readIndex request.
                     ReadOnlyServiceImpl.this.lock.unlock();
                     doUnlock = false;
+                    // 回调响应各个 ReadIndex 请求
                     notifySuccess(readIndexStatus);
-                } else {
+                }
+                // 本地已经应用的 LogEntry 的 logIndex 还未到达 lastCommittedIndex 位置，
+                // 缓存当前请求，等待对应的 LogEntry 在本地被应用时回调响应
+                else {
                     // Not applied, add it to pending-notify cache.
                     ReadOnlyServiceImpl.this.pendingNotifyStatus
                         .computeIfAbsent(readIndexStatus.getIndex(), k -> new ArrayList<>(10)) //
@@ -205,6 +216,7 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
         if (events.isEmpty()) {
             return;
         }
+        // 构造 ReadIndex 请求
         final ReadIndexRequest.Builder rb = ReadIndexRequest.newBuilder() //
             .setGroupId(this.node.getGroupId()) //
             .setServerId(this.node.getServerId().toString());
@@ -217,6 +229,7 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
         }
         final ReadIndexRequest request = rb.build();
 
+        // 处理 ReadIndex 请求
         this.node.handleReadIndexRequest(request, new ReadIndexResponseClosure(states, request));
     }
 

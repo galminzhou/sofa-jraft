@@ -1624,16 +1624,51 @@ public class NodeImpl implements Node, RaftServerService {
     }
 
     /**
+     * 节点正常运行，调用 ReadOnlyService#addRequest 以事件的形式向 Disruptor队列向集群提交一个线性一致性读请求事件；
+     * 源码解读 {@link ReadOnlyServiceImpl#addRequest(byte[], ReadIndexClosure)
+     *      尝试将事件发布至缓冲区（RingBuffer）Disruptor队列进行异步处理，若指定容量不可用，则返回false，最大重试次数为3次；
+     * }
+     * ReadIndexEventHandler 接收到RingBuffer事件处理，调用：
+     * 源码解读 {@link ReadOnlyServiceImpl#executeReadIndexEvents(List)
+     *      构造 ReadIndex 请求并且处理该请求；
+     * }
+     * 调用 NodeImpl#handleReadIndexRequest 方法处理该请求：
+     * 源码解读 {@link NodeImpl#handleReadIndexRequest(ReadIndexRequest, RpcResponseClosure)
+     *     发起线性一致性读请求的节点可以是 Leader 节点，也可以是 Follower 或 Learner 节点：
+     *     1) 对于 Follower 或 Learner 节点而言，需要将请求转发给 Leader 节点，
+     *        以获取当前 Leader 节点的 lastCommittedIndex 位置。
+     *     2) 对于 Leader 节点而言，其目的是读取本地的 lastCommittedIndex 值返回给请求节点，
+     *        但是在返回之前需要验证当前 Leader 节点的有效性。
+     * }
+     * 发给 Leader 节点执行 确定Leader节点（若是Follower节点接收到则转发，向 Leader 节点发送 ReadIndex 请求）：
+     * 源码解读 {@link NodeImpl#readLeader(ReadIndexRequest, ReadIndexResponse.Builder, RpcResponseClosure)
+     *      Leader 节点处理线性一致性读请求，默认执行ReadIndexRead策略，
+     *      若在启动配置配置LeaseRead策略，则通过election timeout验证，验证不通过则执行一次ReadIndexRead策略，
+     *      设置done，ReadIndexHeartbeatResponseClosure的回调；
+     * }
+     * 线性一致性读响应处理过程
+     * 源码解读 {@link com.alipay.sofa.jraft.core.ReadOnlyServiceImpl.ReadIndexResponseClosure#run(Status)
+     *      如果目标 Leader 节点的 LEADER 角色仍然有效，
+     *      则当前节点会等待本地被应用到状态机的 LogEntry 的 logIndex 位置不小于从该 Leader 节点获取到的 lastComittedIndex 值。
      *
+     *      这样可以保证就 lastComittedIndex 这个位置而言，本地与 Leader 的数据是同步的，
+     *      否则就需要等待本地的数据与 Leader 节点的数据进行同步。
+     *
+     *      ReadOnlyServiceImpl 实现了 LastAppliedLogIndexListener 接口，所以当完成应用一批日志数据到状态机中时，
+     *      相应的 ReadOnlyServiceImpl#onApplied 方法也会被回调，从而尝试触发执行那些等待数据同步的回调。
+     * }
      *
      */
     @Override
     public void readIndex(final byte[] requestContext, final ReadIndexClosure done) {
+        // 当前节点正在被关闭
         if (this.shutdownLatch != null) {
             Utils.runClosureInThread(done, new Status(RaftError.ENODESHUTDOWN, "Node is shutting down."));
             throw new IllegalStateException("Node is shutting down");
         }
         Requires.requireNonNull(done, "Null closure");
+        // 向 ReadOnlyService 提交一个 ReadIndex 请求，
+        // 当本地数据与 Leader 节点数据在特定的位置（lastCommittedIndex）同步时，响应回调
         this.readOnlyService.addRequest(requestContext, done);
     }
 
@@ -1690,6 +1725,9 @@ public class NodeImpl implements Node, RaftServerService {
 
     /**
      * Handle read index request.
+     * 根据当前节点的角色（State）分而治之，
+     * 1）对于 Follower 或 Learner 节点而言只是简单的将 ReadIndex 请求转发给 Leader 节点进行处理；
+     * 2）不管当前 ReadIndex 请求是来自 Leader 节点还是 Follower 节点，最终都需要转发给 Leader 节点执行。
      */
     @Override
     public void handleReadIndexRequest(final ReadIndexRequest request, final RpcResponseClosure<ReadIndexResponse> done) {
@@ -1697,12 +1735,17 @@ public class NodeImpl implements Node, RaftServerService {
         this.readLock.lock();
         try {
             switch (this.state) {
+                // 当前节点是 LEADER 角色
                 case STATE_LEADER:
+                    // 基于 ReadIndexRead 或 LeaseRead 策略验证当前 Leader 节点是否仍然有效
                     readLeader(request, ReadIndexResponse.newBuilder(), done);
                     break;
+                // 当前节点是 FOLLOWER 角色
                 case STATE_FOLLOWER:
+                    // 向 Leader 节点发送 ReadIndex 请求
                     readFollower(request, done);
                     break;
+                // 当前正在执行 LEADER 节点切换
                 case STATE_TRANSFERRING:
                     done.run(new Status(RaftError.EBUSY, "Is transferring leadership."));
                     break;
@@ -1738,19 +1781,38 @@ public class NodeImpl implements Node, RaftServerService {
         this.rpcService.readIndex(this.leaderId.getEndpoint(), newRequest, -1, closure);
     }
 
+    /**
+     * Leader 节点处理线性一致性读请求的整体执行流程可以概括为：
+     *   1) 如果当前集群只有一个节点，则立即响应成功；
+     *   2) 否则，校验当前节点本地 lastCommittedIndex 值是否有效，如果无效则响应异常；
+     *   3) 否则，对于来自 Follower 或 Learner 节点的请求，需要校验请求来源节点是否是有效节点，
+     *      即这些节点位于当前 Leader 节点的主权范围内，如果不是则响应异常；
+     *   4) 否则，基于 ReadIndex Read 或 Lease Read 策略判断当前节点 LEADER 角色的有效性，如果有效则响应成功，否则响应失败。
+     *
+     *   当一个节点刚刚竞选成为 LEADER 角色时，此时该节点本地的 lastCommittedIndex 值并不一定是当前整个系统最新的 lastCommittedIndex 值，
+     *   所以上述步骤二需要校验本地 lastCommittedIndex 值的有效性，如果对应的 term 值不匹配则一定是无效的。
+     *
+     *   此外，当一个节点竞选成功后会将当前集群的节点配置信息作为任期内第一条 LogEntry 进行提交，
+     *   这一操作能够保证 Leader 节点的 lastCommittedIndex 值是集群范围内最新的。
+     *
+     *   在获取到最新的 lastCommittedIndex 位置之后，只要能够确定当前 Leader 节点是有效的即能返回该 lastCommittedIndex 值。
+     */
     private void readLeader(final ReadIndexRequest request, final ReadIndexResponse.Builder respBuilder,
                             final RpcResponseClosure<ReadIndexResponse> closure) {
+        // 获取投票仲裁值，即集群节点的半数加 1；
         final int quorum = getQuorum();
+        // 非集群，有且仅有一个节点，直接返回 lastCommittedIndex 值
         if (quorum <= 1) {
             // Only one peer, fast path.
-            respBuilder.setSuccess(true) //
-                .setIndex(this.ballotBox.getLastCommittedIndex());
+            respBuilder.setSuccess(true).setIndex(this.ballotBox.getLastCommittedIndex());
             closure.setResponse(respBuilder.build());
             closure.run(Status.OK());
             return;
         }
 
+        // 获取本地记录的 lastCommittedIndex 值
         final long lastCommittedIndex = this.ballotBox.getLastCommittedIndex();
+        // 校验 term 值是否发生变化，以确保对应的 lastCommittedIndex 值是有效的
         if (this.logManager.getTerm(lastCommittedIndex) != this.currTerm) {
             // Reject read only request when this leader has not committed any log entry at its term
             closure
@@ -1760,12 +1822,15 @@ public class NodeImpl implements Node, RaftServerService {
                     lastCommittedIndex, this.currTerm));
             return;
         }
+        // 记录 lastCommittedIndex 到请求响应对象中
         respBuilder.setIndex(lastCommittedIndex);
 
+        // 对于来自 Follower 节点或 Learner 节点的请求，peerId 字段会记录这些节点已知的 leaderId 值，所以不为 null
         if (request.getPeerId() != null) {
             // request from follower or learner, check if the follower/learner is in current conf.
             final PeerId peer = new PeerId();
             peer.parse(request.getServerId());
+            // 请求来源节点并不是当前 Leader 节点管理范围内的节点
             if (!this.conf.contains(peer) && !this.conf.containsLearner(peer)) {
                 closure
                     .run(new Status(RaftError.EPERM, "Peer %s is not in current configuration: %s.", peer, this.conf));
@@ -1773,6 +1838,10 @@ public class NodeImpl implements Node, RaftServerService {
             }
         }
 
+        // 基于节点启动参数，决策执行 ReadIndexRead策略 还是 ，默认ReadIndexRead策略；
+        // 官方Raft中表示：LeaseRead策略 性能相对于 ReadIndexRead策略 提升约15%；
+        // 若是 LeaseRead策略，则基于时间戳检查集群中是否有过数的节点仍然仍认可当前Leader身份，
+        // 若不认可（即将到达选举期限时间）则将当前的策略改为ReadIndexRead策略
         ReadOnlyOption readOnlyOpt = this.raftOptions.getReadOnlyOptions();
         if (readOnlyOpt == ReadOnlyOption.ReadOnlyLeaseBased && !isLeaderLeaseValid()) {
             // If leader lease timeout, we must change option to ReadOnlySafe
@@ -1780,9 +1849,11 @@ public class NodeImpl implements Node, RaftServerService {
         }
 
         switch (readOnlyOpt) {
+            // ReadIndexRead 策略
             case ReadOnlySafe:
                 final List<PeerId> peers = this.conf.getConf().getPeers();
                 Requires.requireTrue(peers != null && !peers.isEmpty(), "Empty peers");
+                // 向所有的 Follower 节点发送心跳请求，以检查当前 Leader 节点是否仍然有效
                 final ReadIndexHeartbeatResponseClosure heartbeatDone = new ReadIndexHeartbeatResponseClosure(closure,
                     respBuilder, quorum, peers.size());
                 // Send heartbeat requests to followers
@@ -1793,6 +1864,7 @@ public class NodeImpl implements Node, RaftServerService {
                     this.replicatorGroup.sendHeartbeat(peer, heartbeatDone);
                 }
                 break;
+            // LeaseRead 策略，进入此步骤，说明集群中有超过半数的节点仍然认可当前 Leader 节点
             case ReadOnlyLeaseBased:
                 // Responses to followers and local node.
                 respBuilder.setSuccess(true);
@@ -1965,10 +2037,13 @@ public class NodeImpl implements Node, RaftServerService {
     // in read_lock
     private boolean isLeaderLeaseValid() {
         final long monotonicNowMs = Utils.monotonicMs();
+        // 检查距离最近校验当前 Leader 节点有效性的时间是否在租约范围内
         if (checkLeaderLease(monotonicNowMs)) {
             return true;
         }
+        // 检查管理的所有 Follower 节点是否有超过半数仍然认为当前 Leader 节点有效
         checkDeadNodes0(this.conf.getConf().getPeers(), monotonicNowMs, false, null);
+        // 最近一次向所有活跃 Follower 节点成功发送 RPC 请求的最早时间距离指定时间是否在有效租约范围内
         return checkLeaderLease(monotonicNowMs);
     }
 

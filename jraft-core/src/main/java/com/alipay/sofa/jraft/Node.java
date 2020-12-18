@@ -172,6 +172,7 @@ public interface Node extends Lifecycle<NodeOptions>, Describer {
     /**
      * [Thread-safe and wait-free]
      * [SSS-发起线性一致读请求]
+     * 关于线性一致性读的定义，简单而言就是在 T 时刻执行写入操作，那么在 T 时刻之后一定能够读取到之前写入的值。
      *
      * 当可安全读取的时候（appleIndex > ReadIndex）， 设置的的 closure（callback）将被调用，
      * 正常情况下可以从状态机中读取数据返回给客户端， jraft 将保证读取的线性一致性。
@@ -184,6 +185,15 @@ public interface Node extends Lifecycle<NodeOptions>, Describer {
      * 在一些更高性能（两个实现的性能差距大概在 15% 左右）的场景下，并且可以保证集群内机器的 CPU 时钟同步，
      * 那么可以采用 Clock + Heartbeat 的 Lease Read 优化，
      * 可以通过服务端设置 RaftOptions 的 ReadOnlyOption 为 ReadOnlyLeaseBased 来实现。
+     *
+     *
+     ---------------------------------------------------------------------------------------------------
+     Raft 协议的最终实现思路可以概括如下：
+     1) 确定当前 Leader 节点的有效性；
+     2) 从 Leader 节点拉取最新的 comittedIndex 值，即 lastComittedIndex 值；
+     3) 等待本地已被业务状态应用的 LogEntry 对应的 logIndex 值超过该 lastComittedIndex 位置。
+     ---------------------------------------------------------------------------------------------------
+     *
      *
      * Starts a linearizable read-only query request with request context(optional,
      * such as request id etc.) and closure.  The closure will be called when the
