@@ -2130,6 +2130,7 @@ public class NodeImpl implements Node, RaftServerService {
     /**
      * [SSS-Raft日志复制 关注方法]
      *
+     *
      * 探针（or心跳）请求流程概括：
      *      1) 如果当前节点处于非活跃状态，则响应错误；
      *      2) 否则，解析请求来源节点的serverId，如果解析失败则响应错误；

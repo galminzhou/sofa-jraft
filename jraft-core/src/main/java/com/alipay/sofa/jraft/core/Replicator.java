@@ -91,6 +91,7 @@ public class Replicator implements ThreadId.OnError {
     private int                              consecutiveErrorTimes  = 0;
     private boolean                          hasSucceeded;
     private long                             timeoutNowIndex;
+    /** 用于记录最近一次成功向目标 Follower 节点发送 RPC 请求的时间戳 */
     private volatile long                    lastRpcSendTimestamp;
     private volatile long                    heartbeatCounter       = 0;
     private volatile long                    appendEntriesCounter   = 0;
@@ -712,31 +713,47 @@ public class Replicator implements ThreadId.OnError {
 
     /**
      * [SSS-Raft日志复制 关注方法]
-     * Leader 发送探针请求 append-entries;
-     *   -> Follower 接收探针请求 append-entries，设置done.run()响应;
-     *     -> Leader 【等待】接收Follower的响应请求并处理响应的内容;
-     *       ->
-     *     -> Leader 将请求标记并记录到inflight队列；
      *
      * 构建AppendEntries请求对象，填充基础属性；
-     * 发送探针请求：
-     * 源码解读 - {@link RaftClientService#appendEntries(Endpoint, AppendEntriesRequest, int, RpcResponseClosure)
+     *
+     * -------------------探针请求 start---------------------------------------------
+     * Leader 发送探针请求，获得 Follower or Learner 的最新记录日志：
+     * 源码解读 {@link RaftClientService#appendEntries(Endpoint, AppendEntriesRequest, int, RpcResponseClosure)
      *      发送AppendEntries请求并使用done处理响应；
      * }
      * 目标节点（Follower or Learner）接收到探针请求：
-     * 源码解读 - {@link NodeImpl#handleAppendEntriesRequest(AppendEntriesRequest, RpcRequestClosure)
+     * 源码解读 {@link NodeImpl#handleAppendEntriesRequest(AppendEntriesRequest, RpcRequestClosure)
      *      首先校验请求节点是一个合格的Leader，本地节点是否是合格Follower，根据请求term和节点状态决策是否 stepDown；
      *      第二步，校验双方的日志是否一致；若一切正常，再更新lastCommittedIndex；
      *      在复制日志（包含数据，非探针or心跳请求），则执行复制数据日志逻辑，然后调用LogManagerImpl#appendEntries()方法；
      * }
      * 设置done回调 处理响应：
-     * 源码解读 - {@link Replicator#onRpcReturned(ThreadId, RequestType, Status, Message, Message, int, int, long)
+     * 源码解读 {@link Replicator#onRpcReturned(ThreadId, RequestType, Status, Message, Message, int, int, long)
      *      Leader 节点对于 Follower 节点的探针请求响应处理
      * }
      * 将请求标记为inflight并记录到inflight队列:
-     * 源码解读 - {@link Replicator#addInflight(RequestType, long, int, int, int, Future)
-     *
+     * 源码解读 {@link Replicator#addInflight(RequestType, long, int, int, int, Future)
+     *      更新本地记录的最近的RPC请求并添加到ArrayDeque中；
      * }
+     * -------------------探针请求 end  ---------------------------------------------
+     *
+     * -------------------心跳请求 （）start ----------------------
+     * Leader 发送心跳请求，保持自己当前的Leader，目前主要用于线性一致性读：
+     * 源码解读 {@link RaftClientService#appendEntries(Endpoint, AppendEntriesRequest, int, RpcResponseClosure)
+     *      发送AppendEntries请求并使用done处理响应；
+     * }
+     * Follower 接收到心跳请求：
+     * 源码解读 {@link NodeImpl#handleAppendEntriesRequest(AppendEntriesRequest, RpcRequestClosure)
+     *      更新最近接收到Leader请求时间，返回Follower本地当前的term值以及对应的最新 lastLogIndex；
+     * }
+     * Leader 响应Follower的请求：
+     * 源码解读 {@link Replicator#onHeartbeatReturned(ThreadId, Status, AppendEntriesRequest, AppendEntriesResponse, long)
+     *      1）Follower 节点异常，重启心跳计时器；
+     *      2）Follower 反馈有更大的term，执行stepdown；
+     *      3）Follower 拒绝响应，再次发送探针请求，重启心跳计时器；
+     *      4）Follower 正常接收，更新最近RPC请求时间记录，重启心跳计时器；
+     * }
+     * -------------------心跳请求 end  ---------------------------------------------
      * Send probe or heartbeat request
      * @param isHeartbeat      if current entries is heartbeat
      * @param heartBeatClosure heartbeat callback
@@ -766,9 +783,11 @@ public class Replicator implements ThreadId.OnError {
                 this.heartbeatCounter++;
                 RpcResponseClosure<AppendEntriesResponse> heartbeatDone;
                 // Prefer passed-in closure.
+                // 调用者指定的响应回调优先
                 if (heartBeatClosure != null) {
                     heartbeatDone = heartBeatClosure;
                 } else {
+                    // 设置默认的心跳请求响应
                     heartbeatDone = new RpcResponseClosureAdapter<AppendEntriesResponse>() {
 
                         @Override
@@ -1168,6 +1187,7 @@ public class Replicator implements ThreadId.OnError {
 
     private static void onTimeout(final ThreadId id) {
         if (id != null) {
+            // ETIMEDOUT 错误会触发再次向目标节点发送心跳请求
             id.setError(RaftError.ETIMEDOUT.getNumber());
         } else {
             LOG.warn("Replicator id is null when timeout, maybe it's destroyed.");
@@ -1198,12 +1218,15 @@ public class Replicator implements ThreadId.OnError {
 
     static void onHeartbeatReturned(final ThreadId id, final Status status, final AppendEntriesRequest request,
                                     final AppendEntriesResponse response, final long rpcSendTime) {
+        // 复制器已销毁
         if (id == null) {
             // replicator already was destroyed.
             return;
         }
         final long startTimeMs = Utils.nowMs();
         Replicator r;
+        // 获取Replicator的不可重入AQS锁，若失败则表示已注销
+        // 在Replicator未销毁，lock 每隔10ms 获取一次锁，直到获取到Replicator；
         if ((r = (Replicator) id.lock()) == null) {
             return;
         }
@@ -1223,6 +1246,7 @@ public class Replicator implements ThreadId.OnError {
                     .append(" prevLogTerm=") //
                     .append(request.getPrevLogTerm());
             }
+            // Follower 节点运行异常
             if (!status.isOk()) {
                 if (isLogDebugEnabled) {
                     sb.append(" fail, sleep, status=") //
@@ -1235,10 +1259,12 @@ public class Replicator implements ThreadId.OnError {
                     LOG.warn("Fail to issue RPC to {}, consecutiveErrorTimes={}, error={}", r.options.getPeerId(),
                         r.consecutiveErrorTimes, status);
                 }
+                // 重新启动心跳计时器
                 r.startHeartbeatTimer(startTimeMs);
                 return;
             }
             r.consecutiveErrorTimes = 0;
+            // 目标 Follower 节点的 term 值更大，说明有新的 Leader 节点
             if (response.getTerm() > r.options.getTerm()) {
                 if (isLogDebugEnabled) {
                     sb.append(" fail, greater term ") //
@@ -1249,11 +1275,14 @@ public class Replicator implements ThreadId.OnError {
                 }
                 final NodeImpl node = r.options.getNode();
                 r.notifyOnCaughtUp(RaftError.EPERM.getNumber(), true);
+                // 销毁当前复制器
                 r.destroy();
+                // 若发现更大的term，则决策执行Leader下台
                 node.increaseTermTo(response.getTerm(), new Status(RaftError.EHIGHERTERMRESPONSE,
                     "Leader receives higher term heartbeat_response from peer:%s", r.options.getPeerId()));
                 return;
             }
+            // Follower 节点拒绝响应，重新发送探针请求，并启动心跳计时器
             if (!response.getSuccess() && response.hasLastLogIndex()) {
                 if (isLogDebugEnabled) {
                     sb.append(" fail, response term ") //
@@ -1271,9 +1300,11 @@ public class Replicator implements ThreadId.OnError {
             if (isLogDebugEnabled) {
                 LOG.debug(sb.toString());
             }
+            // 更新 RPC 请求时间
             if (rpcSendTime > r.lastRpcSendTimestamp) {
                 r.lastRpcSendTimestamp = rpcSendTime;
             }
+            // 再次启动心跳计时器
             r.startHeartbeatTimer(startTimeMs);
         } finally {
             if (doUnlock) {
