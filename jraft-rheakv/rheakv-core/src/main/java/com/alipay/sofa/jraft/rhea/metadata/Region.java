@@ -25,6 +25,10 @@ import com.alipay.sofa.jraft.util.BytesUtil;
 import com.alipay.sofa.jraft.util.Copiable;
 
 /**
+ * Region 是最小的 KV 数据单元，可理解为一个数据分区或者分片，
+ * 每个 Region 都有一个左闭右开的区间 [startKey, endKey)，能够根据请求流量/负载/数据量大小等指标自动分裂以及自动副本搬迁。
+ * Region 有多个副本 Replication 构建 Raft Groups 存储在不同的 Store 节点，通过 Raft 协议日志复制功能数据同步到同 Group 的全部节点。
+ *
  * Region is the most basic kv data unit.  Each region has a left-closed
  * right-open interval range.  The region is responsible for the crud
  * request in the range.  Each region is a raft group, which is distributed

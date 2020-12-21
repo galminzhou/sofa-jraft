@@ -34,17 +34,9 @@ import com.alipay.sofa.jraft.rhea.util.ByteArray;
 import com.alipay.sofa.jraft.rhea.util.concurrent.DistributedLock;
 
 /**
- * 最上层 User API，
- * 默认实现为 DefaultRheaKVStore， RheaKVStore 为纯异步实现，
- * 所以通常阻塞调用导致的客户端出现瓶颈，理论上不会在RheaKV上遭遇，
- * DefaultRheaKVStore 实现了包括请求路由、request 分裂、response 聚合以及失败重试等功能。
- *
- * 整体上 rheaKV apis 分为异步和同步两类，
- * 其中以 b （block）开头的方法均为同步阻塞方法，
- * 其他为异步方法，异步方法均返回一个 CompletableFuture，
- * 对于 read method， 还有一个重要参数 readOnlySafe，为 true 时表示提供线性一致读，
- * 不包含该参数的 read method 均为默认提供线性一致读。
- * User layer KV store api.
+ * SOFAJRaft-RheaKV 核心模块包括
+ *  KV 模块[RheaKVStore 基于 RegionRouteTable 路由表使用 RaftRawKVStore 存储 KeyValue]，
+ *  PD 模块[PlacementDriverServer 基于 StoreHeartbeat/RegionHeartbeat 心跳平衡节点分区 Leader 以及分裂]。
  *
  * <pre>
  *                           ┌────────────────────────────┐
@@ -84,6 +76,52 @@ import com.alipay.sofa.jraft.rhea.util.concurrent.DistributedLock;
  *     │      RocksRawKVStore       │◀──────────│    KVStoreStateMachine     │◀──raft───│       RaftRawKVStore       │
  *     └────────────────────────────┘           └────────────────────────────┘          └────────────────────────────┘
  * </pre>
+ * RheaKVStore: 源码解读 {@link RheaKVStore
+ *      最上层 User API，默认实现为 DefaultRheaKVStore，
+ *      RheaKVStore 为纯异步实现，所以通常阻塞调用导致的客户端出现瓶颈，理论上不会在 RheaKV 上遭遇，
+ *      DefaultRheaKVStore 实现包括请求路由、Request 分裂、Response 聚合以及失败重试等功能。
+ *
+ *      整体上 rheaKV apis 分为异步和同步两类，其中以 b （block）开头的方法均为同步阻塞方法，
+ *      其他为异步方法，异步方法均返回一个 CompletableFuture，
+ *      对于 read method， 还有一个重要参数 readOnlySafe，为 true 时表示提供线性一致读，不包含该参数的 read method 均为默认提供线性一致读。
+ * }
+ * PlacementDriverClient: 源码解读 {@link PlacementDriverClient
+ *      非必须，
+ *      作为与 PlacementDriver Server 集群沟通的客户端，通过它获取集群完整信息包括但不仅限于”请求路由表”，
+ *      对于无 PD 场景， RheaKV 提供 Fake PD Client。
+ * }
+ * RegionRouteTable: 源码解读 {@link RegionRouteTable
+ *      分片逻辑基于 RegionRouteTable 路由表结构，最适合的数据结构便是跳表或者二叉树(最接近匹配项查询)。
+ *      作为本地路由表缓存组件，RegionRouteTable 根据 KV 请求的具体失败原因来决策是否从 PD Server 集群刷新数据，
+ *      并且提供对单个 Key、多个 Key 列表以及 Key Range 进行计算返回对应的分区 ID。
+ *      选择 Region 的 StartKey 作为 RegionRouteTable 的 Key ，主要取决于 Region Split 的方式，
+ *      父 Region 分裂成两个子 Region 导致其中一个子 Region 的 StartKey 为 SplitKey。
+ * }
+ * LoadBalancer: 源码解读 {@link LoadBalancer
+ *      在提供 Follower 线性一致读的配置下有效，目前仅支持 RR（ReadIndexRead） 策略。
+ * }
+ * RheaKVRpcService: 源码解读 {@link RheaKVRpcService
+ *      针对 KV 存储服务的 RPC Client 客户端封装，实现 Failover 逻辑。
+ * }
+ * RegionKVService: 源码解读 {@link com.alipay.sofa.jraft.rhea.RegionKVService
+ *      KV Server 服务端的请求处理服务，
+ *      一个 StoreEngine 中包含很多 RegionKVService,
+ *      每个 RegionKVService 对应一个 Region，只处理本身 Region 范畴内的请求。
+ * }
+ * MetricsRawKVStore: 源码解读 {@link com.alipay.sofa.jraft.rhea.storage.MetricsRawKVStore
+ *      拦截请求做指标度量。
+ * }
+ * RaftRawKVStore: 源码解读 {@link com.alipay.sofa.jraft.rhea.storage.RaftRawKVStore
+ *      RheaKV 的 Raft 入口，从这里开始 Raft 流程。
+ * }
+ * KVStoreStateMachine: 源码解读 {@link com.alipay.sofa.jraft.rhea.storage.KVStoreStateMachine
+ *      实现 Raft 状态机。
+ * }
+ * RocksRawKVStore: 源码解读 {@link com.alipay.sofa.jraft.rhea.storage.RocksRawKVStore
+ *      原始的 RocksDB API 封装， 目前 RheaKV 也支持可插拔的 MemoryDB 存储实现。
+ * }
+ *
+ * User layer KV store api.
  *
  * @author jiachun.fjc
  */

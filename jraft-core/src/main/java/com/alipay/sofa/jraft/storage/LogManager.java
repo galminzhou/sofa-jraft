@@ -34,6 +34,31 @@ import com.alipay.sofa.jraft.util.Describer;
  * LogStorage 是存储实现，默认实现基于 RocksDB 存储，也可以很容易扩展自己的日志存储实现；
  * LogManager 负责对底层存储的调用，对调用做缓存、批量提交、必要的检查和优化；
  *
+ * 日志管理器 LogManager 负责调用 Log 日志存储 LogStorage，对 LogStorage 调用进行缓存管理、批量提交、检查优化。
+ * Raft 分组节点 Node 初始化/启动时初始化日志存储 StorageFactory 构建日志管理器 LogManager，
+ * 基于日志存储 LogStorage、配置管理器 ConfigurationManager、有限状态机调用者 FSMCaller、节点性能监控 NodeMetrics 等
+ * LogManagerOptions 配置选项实例化 LogManager。
+ * 根据 Raft 节点 Disruptor Buffer 大小配置生成稳定状态回调 StableClosure 事件 Disruptor 队列，
+ * 设置稳定状态回调 StableClosure 事件处理器 StableClosureEventHandler 处理队列事件，
+ * 其中 StableClosureEventHandler 处理器事件触发的时候判断任务回调 StableClosure 的 Log Entries 是否为空，
+ * 如果任务回调的 Log Entries 为非空需积攒日志条目批量 Flush，
+ * 空则检查 StableClosureEvent 事件类型并且调用底层存储 LogStorage#appendEntries(entries) 批量提交日志写入 RocksDB，
+ * 当事件类型为SHUTDOWN、RESET、TRUNCATE_PREFIX、TRUNCATE_SUFFIX、LAST_LOG_ID 时调用底层日志存储 LogStorage 进行指定事件
+ * 回调 ResetClosure、TruncatePrefixClosure、TruncateSuffixClosure、LastLogIdClosure 处理。
+ *
+ * 当 Client 向 SOFAJRaft 发送命令之后，
+ * Raft 分组节点 Node 的日志管理器 LogManager 首先将命令以 Log 的形式存储到本地，
+ * 调用 appendEntries(entries, done) 方法检查 Node 节点当前为 Leader
+ * 并且 Entries 来源于用户未知分配到的正确日志索引时需要分配索引给添加的日志 Entries ，
+ * 而当前为 Follower 时并且 Entries 来源于 Leader 必须检查以及解决本地日志和  Entries 之间的冲突。
+ * 接着遍历日志条目 Log Entries 检查类型是否为配置变更，配置管理器 ConfigurationManager 缓存配置变更 Entry，
+ * 将现有日志条目 Entries 添加到 logsInMemory 进行缓存，稳定状态回调 StableClosure 设置需要存储的日志，
+ * 发布 OTHER 类型事件到稳定状态回调 StableClosure 事件队列，
+ * 触发稳定状态回调 StableClosure 事件处理器 StableClosureEventHandler 处理该事件，
+ * 处理器获取任务回调的 Log Entries 把日志条目积累到内存中以便后续统一批量 Flush，
+ * 通过 appendToStorage(toAppend) 操作调用底层LogStorage 存储日志 Entries。
+ * 同时 Replicator 把此条 Log 复制给其他的 Node 实现并发的日志复制，
+ * 当 Node 接收集群中半数以上的 Node 返回的“复制成功”的响应将这条 Log 以及之前的 Log 有序的发送至状态机里面执行。
  *
  * Log manager.
  *

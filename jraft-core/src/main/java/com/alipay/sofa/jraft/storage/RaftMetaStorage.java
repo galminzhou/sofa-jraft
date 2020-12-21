@@ -25,6 +25,15 @@ import com.alipay.sofa.jraft.option.RaftMetaStorageOptions;
  *
  * JRaft 提供了 LocalRaftMetaStorage 实现类，基于本地文件系统采用 protobuf 协议对元数据执行序列化之后进行存储。
  *
+ * RaftMetaStorage 元信息存储实现，定义 Raft 元数据的 Metadata 存储模块核心 API 接口包括：
+ *      1) 设置/获取 Raft 元数据的当前任期 Term；
+ *      2) 分配/查询 Raft 元信息的 PeerId 节点投票。
+ *
+ * Raft 内部状态任期 Term 是在整个 Raft Group 里单调递增的 long 数字，用来表示一轮投票的编号，
+ * 其中成功选举出来的 Leader 对应的 Term 称为 Leader Term，Leader 没有发生变更期间提交的日志都有相同的 Term 编号。
+ * PeerId 表示 Raft 协议的参与者(Leader/Follower/Candidate etc.)，
+ * 由三元素组成： ip:port:index，其中 ip 是节点的 IP， port 是端口， index 表示同一个端口的序列号(暂不使用)。
+ *
  * Raft metadata storage service.
  *
  * @author boyan (boyan@alibaba-inc.com)

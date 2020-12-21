@@ -43,7 +43,38 @@ import com.alipay.sofa.jraft.util.Utils;
  *
  * 运行期间对于这两个属性值的更改全部记录在内存中，并在关闭时（即执行 LocalRaftMetaStorage#shutdown 方法期间）将内存中的数据序列化后落盘。
  *
- *
+ ---------------------------------------------------------------------------------------------------------
+ Protocol Buffers 是一种轻便高效的结构化数据存储格式，
+ 用于结构化数据串行化或者说序列化，适合做数据存储或 RPC 数据交换格式，
+ 用于通讯协议、数据存储等领域的语言无关、平台无关、可扩展的序列化结构数据格式。
+ 用户在 .proto 文件定义 Protocol Buffer 的 Message 类型指定需要序列化的数据结构，
+ 每一个 Message  都是一个小的信息逻辑单元包含一系列的键值对，
+ 每种类型的 Message 涵盖一个或者多个唯一编码字段，
+ 每个字段由名称和值类型组成，允许 Message 定义可选字段 Optional Fields、必须字段 Required Fields、可重复字段 Repeated Fields。
+
+ RaftMetaStorage 默认实现 LocalRaftMetaStorage 是基于 ProtoBuf  Message 本地存储 Raft 元数据，
+ 初始化元信息存储 StorageFactory 根据 Raft 元信息存储路径、 Raft 内部配置以及 Node 节点监控默认创建 LocalRaftMetaStorage 元信息存储。
+ 基于 ProtoBuf 存储实现 LocalRaftMetaStorage 主要操作包括：
+    init()：
+        获取 Raft 元信息存储配置 RaftMetaStorageOptions 节点 Node，
+        读取命名为 raft_meta 的 ProtoBufFile 文件加载 StablePBMeta 消息，
+        根据 StablePBMeta ProtoBuf 元数据缓存 Raft 当前任期 Term 和 PeerId 节点投票信息。
+    shutdown()：
+        获取内存里 Raft 当前任期 Term 和 PeerId 节点投票构建 StablePBMeta 消息，
+        按照 Raft 内部是否同步元数据配置写入 ProtoBufFile 文件。
+    setTerm(term)：
+        检查 LocalRaftMetaStorage 初始化状态，缓存设置的当前任期 Term，
+        按照 Raft 是否同步元数据配置把当前任期 Term 作为 ProtoBuf 消息保存到 ProtoBufFile 文件。
+    getTerm()：
+        检查 LocalRaftMetaStorage 初始化状态，返回缓存的当前任期 Term。
+    setVotedFor(peerId)：
+        检查 LocalRaftMetaStorage 初始化状态，缓存投票的 PeerId 节点，
+        按照 Raft 是否同步元数据配置把投票 PeerId 节点作为 ProtoBuf 消息保存到 ProtoBufFile 文件。
+    getVotedFor()：
+        检查 LocalRaftMetaStorage 初始化状态，返回缓存的投票 PeerId 节点。
+
+ LocalRaftMetaStorage 基于 ProtoBuf 本地存储 Raft 元信息实现入口。
+ ---------------------------------------------------------------------------------------------------------
  * Raft meta storage,it's not thread-safe.
  *
  * @author boyan (boyan@alibaba-inc.com)

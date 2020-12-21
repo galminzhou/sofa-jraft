@@ -21,6 +21,19 @@ import java.util.List;
 import com.alipay.sofa.jraft.rhea.util.concurrent.DistributedLock;
 
 /**
+ * SOFAJRaft-RheaKV 存储层为可插拔设计，实现 RawKVStore 存储接口，目前 StoreEngine 存储引擎支持 MemoryDB 和 RocksDB 两种实现：
+ *      1) MemoryRawKVStore：MemoryDB 基于 ConcurrentSkipListMap 实现，有更好的性能，但是单机存储容量受内存限制；
+ *      2) RocksRawKVStore：RocksDB 在存储容量上只受磁盘限制，适合更大数据量的场景。
+ *
+ * SOFAJRaft-RheaKV 存储引擎基于 MemoryDB 和 RocksDB 实现 KV 存储入口：
+ *      {@link com.alipay.sofa.jraft.rhea.storage.RawKVStore}
+ *      {@link com.alipay.sofa.jraft.rhea.storage.MemoryRawKVStore}
+ *      {@link com.alipay.sofa.jraft.rhea.storage.RocksRawKVStore}
+ *
+ * SOFAJRaft-RheaKV 数据强一致性依靠 SOFAJRaft 同步数据到其他副本 Replication,
+ * 每个数据变更都会落地为一条 Raft 日志, 通过 Raft 协议日志复制功能将数据安全可靠地同步到同 Raft Group 的全部节点。
+ *
+ *
  * Raw KV store
  *
  * @author dennis

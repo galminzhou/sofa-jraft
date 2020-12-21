@@ -61,6 +61,62 @@ import com.alipay.sofa.jraft.util.StorageOptionsFactory;
 import com.alipay.sofa.jraft.util.Utils;
 
 /**
+ * RocksDBLogStorage 基于 RocksDB 实现
+ *
+ * Log Structured Merge Tree 简称 LSM ，把一颗大树拆分成 N 棵小树，
+ * 数据首先写入内存，内存里构建一颗有序小树，随着小树越来越大，内存的小树 Flush 到磁盘，
+ * 磁盘中的树定期做合并操作合并成一棵大树以优化读性能，通过把磁盘的随机写转化为顺序写提高写性能，
+ * RocksDB 就是基于 LSM-Tree 数据结构使用 C++ 编写的嵌入式 KV 存储引擎，其键值均允许使用二进制流。
+ *
+ * RocksDB 按顺序组织所有数据，通用操作包括 get(key), put(key), delete(Key) 以及 newIterator()。
+ * RocksDB 有三种基本的数据结构：memtable，sstfile 以及 logfile。
+ *      memtable 是一种内存数据结构–所有写入请求都会进入 memtable，然后选择性进入 logfile。
+ *      logfile 是一种有序写存储结构，当 memtable 被填满的时候被刷到 sstfile 文件并存储起来，然后相关的 logfile 在之后被安全地删除。
+ *      sstfile 内的数据都是排序好的，以便于根据 key 快速搜索。
+ *
+ *
+ * LogStorage 默认实现 RocksDBLogStorage 是基于 RocksDB 存储日志，
+ * 初始化日志存储 StorageFactory 根据 Raft节点日志存储路径和 Raft 内部实现是否调用 fsync 配置默认创建 RocksDBLogStorage 日志存储。
+ * 基于 RocksDB 存储实现 RocksDBLogStorage 核心操作包括：
+ * 1) init()：
+ *    创建 RocksDB 配置选项调用 RocksDB#open() 方法构建 RocksDB 实例，
+ *    添加 default 默认列族及其配置选项获取列族处理器，
+ *    通过 newIterator() 生成 RocksDB 迭代器遍历 KeyValue 数据检查 Value 类型加载 Raft 配置变更到配置管理器 ConfigurationManager。
+ *    RocksDB 引入列族 ColumnFamily 概念，所谓列族是指一系列 KeyValue 组成的数据集，
+ *    RocksDB 读写操作需要指定列族，创建 RocksDB 默认构建命名为default 的列族。
+ * 2) shutdown()：
+ *    首先关闭列族处理器以及 RocksDB 实例，
+ *    其次遍历列族配置选项执行关闭操作，
+ *    接着关闭RocksDB 配置选项，最后清除强引用以达到 Help GC 垃圾回收 RocksDB 实例及其配置选项对象。
+ * 3) getFirstLogIndex()：
+ *    基于处理器 defaultHandle 和读选项 totalOrderReadOptions 方法构建 RocksDB 迭代器 RocksIterator，
+ *    检查是否加载过日志里第一个日志索引，未加载需调用 seekToFirst() 方法获取缓存 RocksDB 存储日志数据的第一个日志索引。
+ * 4) getLastLogIndex()：
+ *    基于处理器 defaultHandle 和读选项 totalOrderReadOptions 构建 RocksDB 迭代器 RocksIterator，
+ *    调用 seekToLast() 方法返回 RocksDB 存储日志记录的最后一个日志索引。
+ * 5) getEntry(index)：
+ *    基于处理器 defaultHandle 和指定日志索引调用 RocksDB#get() 操作返回 RocksDB 索引位置日志 LogEntry。
+ * 6) getTerm(index)：
+ *    基于处理器 defaultHandle 和指定日志索引调用 RocksDB#get() 操作获取 RocksDB 索引位置日志并且返回其 LogEntry 的任期。
+ * 7) appendEntry(entry)：
+ *    检查日志 LogEntry 类型是否为配置变更，配置变更类型调用 RocksDB#write() 方法执行批量写入，
+ *    用户提交任务的日志基于处理器 defaultHandle 和 LogEntry 对象调用 RocksDB#put() 方法存储。
+ * 8) appendEntries(entries)：
+ *    调用 RocksDB#write() 方法把 Raft 配置变更或者用户提交任务的日志同步刷盘批量写入 RocksDB 存储，
+ *    通过 Batch Write 手段合并 IO 写入请求减少方法调用和上下文切换。
+ * 9) truncatePrefix(firstIndexKept)：
+ *    获取第一个日志索引，
+ *    后台启动一个线程基于默认处理器 defaultHandle 和配置处理器 confHandle
+ *    执行 RocksDB#deleteRange() 操作删除从 Log 头部以第一个日志索引到指定索引位置范围的 RocksDB 日志数据。
+ * 10)truncateSuffix(lastIndexKept)：
+ *    获取最后一个日志索引，基于默认处理器 defaultHandle 和配置处理器 confHandle
+ *    执行 RocksDB#deleteRange() 操作清理从 Log 末尾以指定索引位置到最后一个索引范畴的 RocksDB 未提交日志。
+ * 11)reset(nextLogIndex)：
+ *    获取 nextLogIndex 索引对应的 LogEntry，执行 RocksDB#close() 方法关闭 RocksDB实例，
+ *    调用 RocksDB#destroyDB() 操作销毁 RocksDB 实例清理 RocksDB 所有数据，重新初始化加载 RocksDB 实例并且重置下一个日志索引位置。
+ *
+ * https://www.sofastack.tech/blog/sofa-jraft-algorithm-storage-module-deep-dive/
+ *
  * Log storage based on rocksdb.
  *
  * @author boyan (boyan@alibaba-inc.com)

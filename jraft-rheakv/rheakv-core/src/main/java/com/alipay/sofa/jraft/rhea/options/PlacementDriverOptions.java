@@ -26,6 +26,11 @@ import com.alipay.sofa.jraft.option.CliOptions;
  */
 public class PlacementDriverOptions {
 
+    /**
+     * PD 是全局的中心总控节点，负责整个集群的调度管理，维护 RegionRouteTable 路由表。
+     * 一个 PDServer 管理多个集群，集群之间基于 clusterId 隔离；
+     * PD Server 需要单独部署，很多场景其实并不需要自管理，RheaKV 也支持不启用 PD，
+     * 不需要自管理的集群可不启用 PD，设置 PlacementDriverOptions 的 fake选项为 true 即可。 */
     private boolean                       fake;
     private CliOptions                    cliOptions;
     private RpcOptions                    pdRpcOptions;

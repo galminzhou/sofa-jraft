@@ -103,6 +103,23 @@ import com.alipay.sofa.jraft.util.Utils;
  *                 │         Handlers ...         │
  *                 └──────────────────────────────┘
  * </pre>
+ * ⭕️ PlacementDriverClient -> MetadataClient：MetadataClient 负责从 PD 获取集群元信息以及注册元信息。
+ * ⭕️ StoreEngine -> HeartbeatSender：
+ *      1) HeartbeatSender 负责发送当前存储节点的心跳，心跳中包含一些状态信息，
+ *         心跳一共分为两类：StoreHeartbeat 和 RegionHeartbeat；
+ *      2) PD 不断接受 RheaKV 集群这两类心跳消息，
+ *         PD 在对 Region Leader 的心跳回复里面包含具体调度指令，再以这些信息作为决策依据。
+ *         除此之外，PD 还应该可以通过管理接口接收额外的运维指令，用来人为执行更准确的决策。
+ *      3) 两类心跳包含的状态信息详细内容如下：
+ *          a) StoreHeartbeat 包括存储节点 Store 容量，
+ *             Region 数量，
+ *             Snapshot 数量以及写入/读取数据量等 StoreStats 统计明细；
+ *          b) RegionHeartbeat 包括 Region 的 Leader 位置，
+ *             掉线 Peer 列表，
+ *             暂时不 Work 的 Follower 以及写入/读取数据量/Key 的个数等 RegionStats 统计明细。
+ * ⭕️ Pipeline：是针对心跳上报 Stats 的计算以及存储处理流水线，处理单元 Handler 可插拔非常方便扩展。
+ * ⭕️ MetadataStore：负责集群元信息存储以及查询，存储方面基于内嵌的 RheaKV。
+ *
  *
  * @author jiachun.fjc
  */

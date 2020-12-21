@@ -25,6 +25,8 @@ import com.alipay.sofa.jraft.util.Copiable;
 import com.alipay.sofa.jraft.util.Endpoint;
 
 /**
+ * Store 是集群中的一个物理存储节点，一个 Store 包含一个或多个 Region。
+ *
  * A physical node in the cluster, embedded in an app java process,
  * store corresponds to a local file based rocksDB, a store contains
  * multiple regions, all regions share a rocksDB.
