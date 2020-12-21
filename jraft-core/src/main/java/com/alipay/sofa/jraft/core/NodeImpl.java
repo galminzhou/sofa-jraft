@@ -141,6 +141,9 @@ import com.lmax.disruptor.dsl.ProducerType;
 
 
  ----------------------------------------------------------------------------------
+
+ 参考：https://www.colabug.com/author/26735/
+
  *
  * The raft replica node implementation.
  *
@@ -589,11 +592,18 @@ public class NodeImpl implements Node, RaftServerService {
         LOG.info("The number of active nodes increment to {}.", num);
     }
 
+    /**
+     * JRaft 针对快照数据存储模块同样采用了操作与存储相分离的策略，
+     * 其中 SnapshotExecutor 主要负责生成和安装快照，
+     * 而 SnapshotStorage 则主要负责针对快照文件的读写，以及从远端 Leader 节点拷贝快照数据。
+     */
     private boolean initSnapshotStorage() {
+        // 未设置 snapshotUri，表示不希望启动快照模块
         if (StringUtils.isEmpty(this.options.getSnapshotUri())) {
             LOG.warn("Do not set snapshot uri, ignore initSnapshotStorage.");
             return true;
         }
+        // 实例化快照执行器，用于处理快照相关操作
         this.snapshotExecutor = new SnapshotExecutorImpl();
         final SnapshotExecutorOptions opts = new SnapshotExecutorOptions();
         opts.setUri(this.options.getSnapshotUri());
@@ -605,32 +615,51 @@ public class NodeImpl implements Node, RaftServerService {
         opts.setFilterBeforeCopyRemote(this.options.isFilterBeforeCopyRemote());
         // get snapshot throttle
         opts.setSnapshotThrottle(this.options.getSnapshotThrottle());
+        // 初始化快照执行器
         return this.snapshotExecutor.init(opts);
     }
 
+    /**
+     * 初始化日志数据存储模块（创建和初始化 LogManager 实例）；
+     *
+     * 源码解读 {@link LogManagerImpl#init(LogManagerOptions)
+     *      1) 初始化日志存储服务 LogStorage 实例；
+     *      2) 创建并启动一个 Disruptor 队列，用于异步处理日志操作相关的事件。
+     * }
+     */
     private boolean initLogStorage() {
         Requires.requireNonNull(this.fsmCaller, "Null fsm caller");
+        // 实例化日志存储服务，基于 RocksDBLogStorage 实现类
         this.logStorage = this.serviceFactory.createLogStorage(this.options.getLogUri(), this.raftOptions);
+        // 创建并初始化日志管理器
         this.logManager = new LogManagerImpl();
         final LogManagerOptions opts = new LogManagerOptions();
+        // 设置 LogEntry 编解码器工厂，默认使用 LogEntryV2CodecFactory
         opts.setLogEntryCodecFactory(this.serviceFactory.createLogEntryCodecFactory());
+        // 设置日志存储服务
         opts.setLogStorage(this.logStorage);
+        // 设置集群节点配置管理器
         opts.setConfigurationManager(this.configManager);
+        // 设置状态机调度器
         opts.setFsmCaller(this.fsmCaller);
         opts.setNodeMetrics(this.metrics);
         opts.setDisruptorBufferSize(this.raftOptions.getDisruptorBufferSize());
         opts.setRaftOptions(this.raftOptions);
+        // 初始化 LogManager
         return this.logManager.init(opts);
     }
 
     private boolean initMetaStorage() {
+        // 实例化元数据存储服务，基于 LocalRaftMetaStorage 实现类
         this.metaStorage = this.serviceFactory.createRaftMetaStorage(this.options.getRaftMetaUri(), this.raftOptions);
         RaftMetaStorageOptions opts = new RaftMetaStorageOptions();
         opts.setNode(this);
+        // 初始化元数据存储服务
         if (!this.metaStorage.init(opts)) {
             LOG.error("Node {} init meta storage failed, uri={}.", this.serverId, this.options.getRaftMetaUri());
             return false;
         }
+        // 基于本地元数据恢复 currentTerm 和 votedFor 属性值
         this.currTerm = this.metaStorage.getTerm();
         this.votedId = this.metaStorage.getVotedFor().copy();
         return true;
@@ -807,11 +836,26 @@ public class NodeImpl implements Node, RaftServerService {
         return maxPriority;
     }
 
+    /**
+     * 源码解读 fsmCaller.init(opts) {@link FSMCallerImpl#init(FSMCallerOptions)
+     *      除了一些属性的赋值工作外，
+     *      主要是创建和启动了一个 Disruptor 队列，用于异步处理各种状态机事件；
+     * }
+     * 源码解读 Disruptor 写入具体状态机事件 {@link FSMCallerImpl#onCommitted(long)
+     *      用于往该 Disruptor 队列写入具体的状态机事件；
+     * }
+     *
+     * ApplyTaskHandler 通过调用 FSMCallerImpl#runApplyTask 方法对 Disruptor 消息队列中缓存的状态机事件进行处理：
+     * 源码解读 Disruptor 事件处理器 {@link FSMCallerImpl#runApplyTask(FSMCallerImpl.ApplyTask, long, boolean)
+     *      此方法本质上是一个事件分发器，基于具体的状态机事件类型调用对应的 do* 方法实现对事件的处理操作。
+     * }
+     */
     private boolean initFSMCaller(final LogId bootstrapId) {
         if (this.fsmCaller == null) {
             LOG.error("Fail to init fsm caller, null instance, bootstrapId={}.", bootstrapId);
             return false;
         }
+        // 创建封装 Closure 的队列，基于 LinkedList 实现
         this.closureQueue = new ClosureQueueImpl();
         final FSMCallerOptions opts = new FSMCallerOptions();
         opts.setAfterShutdown(status -> afterShutdown());
@@ -821,6 +865,7 @@ public class NodeImpl implements Node, RaftServerService {
         opts.setNode(this);
         opts.setBootstrapId(bootstrapId);
         opts.setDisruptorBufferSize(this.raftOptions.getDisruptorBufferSize());
+        // 初始化状态机调度器
         return this.fsmCaller.init(opts);
     }
 
@@ -954,17 +999,19 @@ public class NodeImpl implements Node, RaftServerService {
         this.serverId.setPriority(opts.getElectionPriority());
         this.electionTimeoutCounter = 0;
 
+        // 节点IP，不允许设置：0.0.0.0
         if (this.serverId.getIp().equals(Utils.IP_ANY)) {
             LOG.error("Node can't started from IP_ANY.");
             return false;
         }
 
+        // 正常在初始化 Node 之前需要调用 NodeManager#addAddress 方法记录当前节点地址
         if (!NodeManager.getInstance().serverExists(this.serverId.getEndpoint())) {
             LOG.error("No RPC server attached to, did you forget to call addService?");
             return false;
         }
 
-        // 定时器，在 heartbeat、block 时使用
+        // 创建并初始化延时任务调度器 TimerManager，负责 JRaft 内部的延时任务调度（在 heartbeat、block 时使用）
         this.timerManager = TIMER_FACTORY.getRaftScheduler(this.options.isSharedTimerPool(),
             this.options.getTimerPoolSize(), "JRaft-Node-ScheduleThreadPool");
 
@@ -972,7 +1019,7 @@ public class NodeImpl implements Node, RaftServerService {
         final String suffix = getNodeId().toString();
         /* 创建：投票计时器、选举计时器、Down机计时器、快照计时器 start */
         String name = "JRaft-VoteTimer-" + suffix;
-        // 定期检查是否需要选举Leader，若存在Candidate节点，则发起预投票，通过之后选举Leader
+        // 定期检查是否需要选举Leader，若存在Candidate节点，则发起预投票，通过之后选举Leader（周期: 1s ~ 2s）
         this.voteTimer = new RepeatedTimer(name, this.options.getElectionTimeoutMs(), TIMER_FACTORY.getVoteTimer(
             this.options.isSharedVoteTimer(), name)) {
 
@@ -989,7 +1036,7 @@ public class NodeImpl implements Node, RaftServerService {
             }
         };
         name = "JRaft-ElectionTimer-" + suffix;
-        // 设计预投票计时器
+        // 设计预投票计时器（周期 1s ~ 2s）
         // 当Leader在一定时间内（election timeout）没有与 Follower 通信时（定期发送心跳包：appendEntries()）
         // Follower就认为Leader已经不能够正常的担任旗舰的职责了，则Follower就会发起一次选举尝试让自己担任Leader
         // 在发起Leader选举之前，也有可能是Follower与集群失联，因此需要先发起预投票，
@@ -1010,7 +1057,7 @@ public class NodeImpl implements Node, RaftServerService {
             }
         };
         name = "JRaft-StepDownTimer-" + suffix;
-        // Leader下台计时器，定时检查是否需要重新选举Leader
+        // Leader下台计时器，定时检查是否需要重新选举Leader）（周期: 0.5s ）
         this.stepDownTimer = new RepeatedTimer(name, this.options.getElectionTimeoutMs() >> 1,
             TIMER_FACTORY.getStepDownTimer(this.options.isSharedStepDownTimer(), name)) {
 
@@ -1020,7 +1067,7 @@ public class NodeImpl implements Node, RaftServerService {
             }
         };
         name = "JRaft-SnapshotTimer-" + suffix;
-        // 快照计时器
+        // 快照计时器（周期：默认 3600s = 1h）
         this.snapshotTimer = new RepeatedTimer(name, this.options.getSnapshotIntervalSecs() * 1000,
             TIMER_FACTORY.getSnapshotTimer(this.options.isSharedSnapshotTimer(), name)) {
 
@@ -1049,11 +1096,13 @@ public class NodeImpl implements Node, RaftServerService {
         };
         /* 创建：投票计时器、选举计时器、Down机计时器、快照计时器 start */
 
+        // 创建集群节点配置管理器
         this.configManager = new ConfigurationManager();
 
         /* 构建一个Disruptor队列，队列RingBuffer Size:16384，MULTI, 使用 BlockingWaitStrategy（
-        BlockingWaitStrategy 是最低效的策略，但其对CPU的消耗最小并且在各种不同的部署环境中能提供更加一致性的表现；
-        ）  */
+        BlockingWaitStrategy 是最低效的策略，但其对CPU的消耗最小并且在各种不同的部署环境中能提供更加一致性的表现）策略，
+        用于异步处理业务调用 Node#apply 方法向集群提交的 Task 列表
+         */
         this.applyDisruptor = DisruptorBuilder.<LogEntryAndClosure> newInstance() //
             .setRingBufferSize(this.raftOptions.getDisruptorBufferSize()) //
             .setEventFactory(new LogEntryAndClosureFactory()) //
@@ -1069,9 +1118,9 @@ public class NodeImpl implements Node, RaftServerService {
                 new DisruptorMetricSet(this.applyQueue));
         }
 
-        // 有限状态机
+        // 创建状态机调度器
         this.fsmCaller = new FSMCallerImpl();
-        // 创建并实例化：LogManagerImpl（Disruptor队列），采用rocksdb作为日志存储
+        // 创建并初始化元数据存储模块：LogManagerImpl（Disruptor队列），采用rocksdb作为日志存储
         if (!initLogStorage()) {
             LOG.error("Node {} initLogStorage failed.", getNodeId());
             return false;
@@ -1081,31 +1130,36 @@ public class NodeImpl implements Node, RaftServerService {
             LOG.error("Node {} initMetaStorage failed.", getNodeId());
             return false;
         }
-        //
+        // 初始化状态机调度器
         if (!initFSMCaller(new LogId(0, 0))) {
             LOG.error("Node {} initFSMCaller failed.", getNodeId());
             return false;
         }
-        // 日志复制选票箱，用于执行状态机
+        // 创建并初始化选票箱 BallotBox，每个Raft参与者（不包含Learner）绑定一个选票箱；
         this.ballotBox = new BallotBox();
         final BallotBoxOptions ballotBoxOpts = new BallotBoxOptions();
         ballotBoxOpts.setWaiter(this.fsmCaller);
+        // closureQueue 在初始化 FSMCaller 时创建，相互共用
         ballotBoxOpts.setClosureQueue(this.closureQueue);
         if (!this.ballotBox.init(ballotBoxOpts)) {
             LOG.error("Node {} init ballotBox failed.", getNodeId());
             return false;
         }
 
+        // 初始化快照数据存储模块
         if (!initSnapshotStorage()) {
             LOG.error("Node {} initSnapshotStorage failed.", getNodeId());
             return false;
         }
 
+        // 对日志数据进行一致性校验
         final Status st = this.logManager.checkConsistency();
         if (!st.isOk()) {
             LOG.error("Node {} is initialized with inconsistent log, status={}.", getNodeId(), st);
             return false;
         }
+
+        // 初始化集群节点配置，优先从日志中恢复
         this.conf = new ConfigurationEntry();
         this.conf.setId(new LogId());
         // if have log using conf in log, else using conf in options
@@ -1114,9 +1168,11 @@ public class NodeImpl implements Node, RaftServerService {
         } else {
             this.conf.setConf(this.options.getInitialConf());
             // initially set to max(priority of all nodes)
+            // 以初始节点中的最大优先级初始化 targetPriority，用于控制当前节点是否继续发起预选举
             this.targetPriority = getMaxPriorityOfNodes(this.conf.getConf().getPeers());
         }
 
+        // 如果初始集群列表不为空，则需要校验其有效性，即 peers 不为空，且不能和 learners 有交集
         if (!this.conf.isEmpty()) {
             Requires.requireTrue(this.conf.isValid(), "Invalid conf: %s", this.conf);
         } else {
@@ -1124,7 +1180,9 @@ public class NodeImpl implements Node, RaftServerService {
         }
 
         // TODO RPC service and ReplicatorGroup is in cycle dependent, refactor it
+        // 创建复制器 Replicator 管理组
         this.replicatorGroup = new ReplicatorGroupImpl();
+        // 创建RPC客户端
         this.rpcService = new DefaultRaftClientService(this.replicatorGroup);
         final ReplicatorGroupOptions rgOpts = new ReplicatorGroupOptions();
         rgOpts.setHeartbeatTimeoutMs(heartbeatTimeout(this.options.getElectionTimeoutMs()));
@@ -1140,12 +1198,14 @@ public class NodeImpl implements Node, RaftServerService {
         // Adds metric registry to RPC service.
         this.options.setMetricRegistry(this.metrics.getMetricRegistry());
 
+        // 初始化 RPC客户端
         if (!this.rpcService.init(this.options)) {
             LOG.error("Fail to init rpc service.");
             return false;
         }
+        // 初始化复制器管理组
         this.replicatorGroup.init(new NodeId(this.groupId, this.serverId), rgOpts);
-
+        // 创建并初始化 只读服务，用于支持线性一致性读
         this.readOnlyService = new ReadOnlyServiceImpl();
         final ReadOnlyServiceOptions rosOpts = new ReadOnlyServiceOptions();
         rosOpts.setFsmCaller(this.fsmCaller);
@@ -1157,6 +1217,7 @@ public class NodeImpl implements Node, RaftServerService {
             return false;
         }
 
+        // 将Raft参与者 初始设置为Follower，即所有的Raft参与者都是以Follower身份加入Raft Group；
         // set state to follower
         this.state = State.STATE_FOLLOWER;
 
@@ -1165,11 +1226,13 @@ public class NodeImpl implements Node, RaftServerService {
                 this.logManager.getLastLogId(false), this.conf.getConf(), this.conf.getOldConf());
         }
 
+        // 若启动了快照机制，则启动周期性快照生成任务
         if (this.snapshotExecutor != null && this.options.getSnapshotIntervalSecs() > 0) {
             LOG.debug("Node {} start snapshot timer, term={}.", getNodeId(), this.currTerm);
             this.snapshotTimer.start();
         }
 
+        // 尝试角色降级，主要用于初始化本地状态，并启动预选举计时器
         if (!this.conf.isEmpty()) {
             stepDown(this.currTerm, false, new Status());
         }
@@ -1624,6 +1687,53 @@ public class NodeImpl implements Node, RaftServerService {
     }
 
     /**
+     * 默认情况下，SOFAJRaft 提供的线性一致读是基于 Raft 协议的 ReadIndex 实现，
+     * 三副本的情况下 Leader 读的吞吐接近于 RPC 的吞吐上限，延迟取决于多数派中最慢的一个 Heartbeat Response。
+     *
+     * 使用 Node#readIndex(byte [] requestContext, ReadIndexClosure done) 发起线性一致读请求，
+     * 当安全读取时传入的 Closure 将被调用，正常情况下从状态机中读取数据返回给客户端， SOFAJRaft 将保证读取的线性一致性。
+     * 线性一致读在任何集群内的节点发起，并不需要强制要求放到 Leader 节点上，允许在 Follower 节点执行，因此大大降低 Leader 的读取压力。
+     *
+     * SOFAJRaft 基于 Raft 协议的 ReadIndex 线性一致读实现是调用
+     * RaftServerService#handleReadIndexRequest 接口
+     * 根据当前节点状态为 STATE_LEADER，STATE_FOLLOWER 以及 STATE_TRANSFERRING 情况处理 ReadIndex 请求：
+     *
+     * 一、当前节点状态是 STATE_LEADER 即为 Leader 节点，
+     *    接收 ReadIndex 请求调用 readLeader(request, ReadIndexResponse.newBuilder(), done) 方法提供线性一致读：
+     *      1) 检查当前 Raft 集群节点数量，
+     *         如果集群只有一个 Peer 节点直接获取投票箱 BallotBox 最新提交索引 lastCommittedIndex
+     *         即 Leader 节点当前 Log 的 commitIndex 构建 ReadIndexClosure 响应；
+     *      2) 日志管理器 LogManager 基于投票箱 BallotBox 的 lastCommittedIndex 获取任期检查是否等于当前任期，
+     *         如果不等于当前任期表示此 Leader 节点未在其任期内提交任何日志，需要拒绝只读请求；
+     *      3) 校验 Raft 集群节点数量以及 lastCommittedIndex 所属任期符合预期，
+     *         那么响应构造器设置其索引为投票箱 BallotBox 的 lastCommittedIndex，
+     *         并且来自 Follower 的请求需要检查 Follower 是否在当前配置；
+     *      4) 获取 ReadIndex 请求级别 ReadOnlyOption 配置，
+     *         ReadOnlyOption 参数默认值为 ReadOnlySafe，ReadOnlySafe 通过与 Quorum 通信来保证只读请求的可线性化。
+     *         按照 ReadOnlyOption 配置为ReadOnlySafe 调用 Replicator#sendHeartbeat(rid, closure) 方法向 Followers 节点发送 Heartbeat 心跳请求，
+     *         发送心跳成功执行 ReadIndexHeartbeatResponseClosure 心跳响应回调；
+     *      5) ReadIndex 心跳响应回调检查是否超过半数节点包括 Leader 节点自身投票赞成，
+     *         半数以上节点返回客户端Heartbeat 请求成功响应，
+     *         即 applyIndex 超过 ReadIndex 说明已经同步到 ReadIndex 对应的 Log 能够提供 Linearizable Read。
+     *
+     * 二、当前节点状态是 STATE_FOLLOWER 即为 Follower 节点，接收 ReadIndex 请求通过 readFollower(request,  done) 方法支持线性一致读：
+     *      1) 检查当前 Leader 节点是否为空，如果 Leader 节点为空表示当然任期没有 Leader 节点；
+     *      2) Follower 节点调用 RpcService#readIndex(leaderId.getEndpoint(), newRequest, -1, closure) 方法向 Leader 发送 ReadIndex 请求，
+     *         Leader 节点调用 readIndex(requestContext, done) 方法启动可线性化只读查询请求，
+     *         只读服务添加请求发布 ReadIndex 事件到队列 readIndexQueue 即 Disruptor 的 Ring Buffer；
+     *      3) ReadIndex 事件处理器 ReadIndexEventHandler 通过 MPSC Queue 模型攒批消费触发使用 executeReadIndexEvents(events) 执行 ReadIndex 事件，
+     *         轮询 ReadIndex 事件封装 ReadIndexState 状态列表构建 ReadIndexResponseClosure 响应回调提交给 Leader 节点处理 ReadIndex 请求；
+     *      4) Leader 节点调用 handleReadIndexRequest(request, readIndexResponseClosure) 方法进行 readLeader 线性一致读过程，
+     *         返回投票箱 BallotBox 的 lastCommittedIndex。
+     *         ReadIndex 响应回调遍历状态列表记录当前提交日志 Index，
+     *         检查申请状态机最新 Log Entry 的 committedIndex 是否已经申请即比较状态机 appliedIndex 是否大于等于当前 committedIndex。
+     *         由于 Leader 节点处理添加 Log Entry 请求发送心跳后投票箱 BallotBox 更新 lastCommittedIndex，
+     *         当 Leader 节点的 lastCommittedIndex 大于当前的 lastCommittedIndex 就会创建提交 Log Entry 异步任务发布到 taskQueue 队列，
+     *         申请任务处理器 ApplyTaskHandler 执行提交 LogEntry 申请任务，通知 Follower 节点最新申请的 committedIndex 已经更新。
+     *         如果当前申请状态机的 applyIndex 超过 ReadIndex，那么通知 ReadIndex 请求成功返回给客户端。
+     *         当前 Follower 节点落后于 Leader 时把 Leader 节点返回的committedIndex 放到 pendingNotifyStatus 缓存等待 Leader 节点同步完日志更新 applyIndex。
+     *
+     * SOFAJRaft 基于 Batch+Pipeline Ack+ 全异步机制的 ReadIndex 核心逻辑：
      * 节点正常运行，调用 ReadOnlyService#addRequest 以事件的形式向 Disruptor队列向集群提交一个线性一致性读请求事件；
      * 源码解读 {@link ReadOnlyServiceImpl#addRequest(byte[], ReadIndexClosure)
      *      尝试将事件发布至缓冲区（RingBuffer）Disruptor队列进行异步处理，若指定容量不可用，则返回false，最大重试次数为3次；

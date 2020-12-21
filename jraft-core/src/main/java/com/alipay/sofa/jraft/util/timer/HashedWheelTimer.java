@@ -33,6 +33,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * 暴露类，主要负责启动Worker线程，添加/取消 Timeout任务，是一个单线程工作环境；
+ *
+ ------------------------------------------------------------------------------------
+ 一个Hash Wheel Timer是一个环形结构，可以想象成时钟，
+ 分为很多格子，一个格子代表一段时间（越短Timer精度越高，在DefaultRaftTimerFactory中，默认Timer: 1ms，共有2048个格子），
+ 并用一个链表（HashedWheelTimeout 双向链表）保存在该格子上到期的所有任务，
+ 同时一个指针随着时间流逝一格一格转动（tick++），并执行对应链表（HashedWheelTimeout）中所有到期的任务；
+ ------------------------------------------------------------------------------------
+ *
+ *
  * <h3>Implementation Details</h3>
  * <p>
  * {@link HashedWheelTimer} is based on
@@ -50,7 +60,7 @@ public class HashedWheelTimer implements Timer {
 
     private static final Logger                                      LOG                    = LoggerFactory
                                                                                                 .getLogger(HashedWheelTimer.class);
-    /** HashedWheelTimer 是一个共享资源（数据比较消耗系统资源，必须跨JVM使用），
+    /** HashedWheelTimer 是一个共享资源（数据比较消耗系统资源，跨JVM使用），
      * 因此不允许创建过多的实例，过多则打印Error日志（配合参数：warnedTooManyInstances），日志打印一次 */
     private static final int                                         INSTANCE_COUNT_LIMIT   = 256;
     /** 实例计数器 */
@@ -61,7 +71,7 @@ public class HashedWheelTimer implements Timer {
                                                                                                 .newUpdater(
                                                                                                     HashedWheelTimer.class,
                                                                                                     "workerState");
-    /** mask & (tick++)，推动数组进入下一个slot的工作线程 */
+    /** mask & (tick++)，推动数组（时钟）进入下一个slot的工作线程 */
     private final Worker                                             worker                 = new Worker();
     private final Thread                                             workerThread;
 
@@ -409,6 +419,9 @@ public class HashedWheelTimer implements Timer {
                   + "reused across the JVM, so that only a few instances are created.", resourceType, resourceType);
     }
 
+    /**
+     * 内部负责添加任务, 累加tick, 执行任务等
+     */
     private final class Worker implements Runnable {
         private final Set<Timeout> unprocessedTimeouts = new HashSet<>();
 
@@ -567,8 +580,8 @@ public class HashedWheelTimer implements Timer {
     }
 
     /**
-     * HashedWheelTimeout 是一个Timeout任务的包装，是一个单线程工作环境
-     * 使用双向链表的结构，方便加入wheel，记录deadline、remainingRounds、state等信息
+     * HashedWheelTimeout 任务的包装类, 链表结构；
+     * 使用双向链表的结构，方便加入wheel，记录deadline、remainingRounds、state等信息。
      */
     private static final class HashedWheelTimeout implements Timeout {
 
@@ -707,6 +720,8 @@ public class HashedWheelTimer implements Timer {
     }
 
     /**
+     * wheel数组元素, 负责存储HashedWheelTimeout链表
+     *
      * Bucket that stores HashedWheelTimeouts. These are stored in a linked-list like datastructure to allow easy
      * removal of HashedWheelTimeouts in the middle. Also the HashedWheelTimeout act as nodes themself and so no
      * extra object creation is needed.

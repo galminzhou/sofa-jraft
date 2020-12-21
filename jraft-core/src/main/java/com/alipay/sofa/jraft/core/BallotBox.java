@@ -37,6 +37,8 @@ import com.alipay.sofa.jraft.util.Requires;
 import com.alipay.sofa.jraft.util.SegmentList;
 
 /**
+ * 投票机制是 Raft 协议运行的基础，JRaft 在实现上为每个节点都设置了一个选票箱 BallotBox 实例，用于对 LogEntry 是否提交进行仲裁。
+ *
  * Ballot box for voting.
  * @author boyan (boyan@alibaba-inc.com)
  *

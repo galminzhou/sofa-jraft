@@ -21,7 +21,10 @@ import com.alipay.sofa.jraft.entity.PeerId;
 import com.alipay.sofa.jraft.option.RaftMetaStorageOptions;
 
 /**
- * Meta Storage 是用来存储记录 Raft 实现的内部状态，比如当前 Term 、投票给哪个节点等信息
+ * Meta Storage 是用来存储记录 Raft 实现的内部状态，比如当前 Term 、投票给哪个节点等信息；
+ *
+ * JRaft 提供了 LocalRaftMetaStorage 实现类，基于本地文件系统采用 protobuf 协议对元数据执行序列化之后进行存储。
+ *
  * Raft metadata storage service.
  *
  * @author boyan (boyan@alibaba-inc.com)

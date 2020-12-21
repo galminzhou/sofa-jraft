@@ -43,7 +43,7 @@ import com.alipay.sofa.jraft.util.Requires;
 import com.alipay.sofa.jraft.util.ThreadId;
 
 /**
- * 在一个Raft Group 的协议参与者（Follower 追随者 and Learner 学习者）
+ * 在一个Raft Group 的协议参与者（一个Leader + Follower 追随者 and Learner 学习者）
  * Replicator group for a raft group.
  * @author boyan (boyan@alibaba-inc.com)
  *

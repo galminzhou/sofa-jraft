@@ -63,11 +63,12 @@ import com.alipay.sofa.jraft.storage.snapshot.SnapshotWriter;
 public interface StateMachine {
 
     /**
-     * 最核心的方法，应用任务列表到状态机，任务将按照提交顺序应用。
-     * 请注意，当这个方法返回的时候，我们就认为这一批任务都已经成功应用到状态机上，
-     * 如果没有完全应用（比如错误、异常），将会被当做一个 critical 级别的错误，报告给状态机的 onError 方法，
-     * 错误类型为 ERROR_TYPE_STATE_MACHINE 。
+     * 将已经成功同步给集群中过半数节点的 LogEntry 对应的指令透传给用户，由用户去实现对指令的处理逻辑；
      *
+     * 最核心的方法，应用任务列表到状态机，任务将按照提交顺序应用。
+     * 注意，当这个方法返回的时候，我们就认为这一批任务都已经成功应用到状态机上，
+     * 如果没有完全应用（比如错误、异常），
+     * 将会被当做一个 critical 级别的错误，报告给状态机的 onError 方法，错误类型为 ERROR_TYPE_STATE_MACHINE 。
      *
      * Update the StateMachine with a batch a tasks that can be accessed
      * through |iterator|.

@@ -188,6 +188,23 @@ public class LogManagerImpl implements LogManager {
         this.lastLogIndexListeners.remove(listener);
     }
 
+    /**
+     *
+     *
+     *
+     * {@link RocksDBLogStorage#init(LogStorageOptions)
+     *      LogStorage 接口定义了与 LogEntry 存储相关的 API，包括读写、截断，以及获取 logIndex 和 term 等；
+     *
+     *      JRaft 默认基于 RocksDB 存储引擎对 LogEntry 提供本地存储和读写，
+     *      相应的实现类包括 RocksDBLogStorage 和 RocksDBSegmentLogStorage。
+     * }
+     *
+     * LogManager 在初始化期间会创建并启动一个 Disruptor<StableClosureEvent> 队列，
+     * 用于异步处理日志操作相关的事件，包括获取最新的 LogId、日志截断、重置日志数据存储服务，以及关闭日志管理器等。
+     * 使用 StableClosureEventHandler#onEvent 方法依据事件类型对消息实施分别处理：
+     * 源码解读 {@link StableClosureEventHandler#onEvent(StableClosureEvent, long, boolean)
+     * }
+     */
     @Override
     public boolean init(final LogManagerOptions opts) {
         this.writeLock.lock();
@@ -205,14 +222,17 @@ public class LogManagerImpl implements LogManager {
             lsOpts.setConfigurationManager(this.configManager);
             lsOpts.setLogEntryCodecFactory(opts.getLogEntryCodecFactory());
 
+            // 初始化日志存储服务
             if (!this.logStorage.init(lsOpts)) {
                 LOG.error("Fail to init logStorage");
                 return false;
             }
+            // 基于日志初始化本地 logIndex 和 term 值
             this.firstLogIndex = this.logStorage.getFirstLogIndex();
             this.lastLogIndex = this.logStorage.getLastLogIndex();
             this.diskId = new LogId(this.lastLogIndex, getTermFromLogStorage(this.lastLogIndex));
             this.fsmCaller = opts.getFsmCaller();
+            // 创建对应的 Disruptor 队列，用于异步处理日志操作相关的事件
             this.disruptor = DisruptorBuilder.<StableClosureEvent> newInstance() //
                     .setEventFactory(new StableClosureEventFactory()) //
                     .setRingBufferSize(opts.getDisruptorBufferSize()) //
@@ -1245,18 +1265,24 @@ public class LogManagerImpl implements LogManager {
         wm.onNewLog.onNewLog(wm.arg, wm.errorCode);
     }
 
+    /**
+     * 校验逻辑主要是确保快照数据与当前数据的连续性，不允许存在数据断层。
+     */
     @Override
     public Status checkConsistency() {
         this.readLock.lock();
         try {
             Requires.requireTrue(this.firstLogIndex > 0);
             Requires.requireTrue(this.lastLogIndex >= 0);
+            // 未生成过快照，所以 firstLogIndex 应该是 1
             if (this.lastSnapshotId.equals(new LogId(0, 0))) {
                 if (this.firstLogIndex == 1) {
                     return Status.OK();
                 }
                 return new Status(RaftError.EIO, "Missing logs in (0, %d)", this.firstLogIndex);
-            } else {
+            }
+            // 生成过快照，则需要保证快照与当前数据的连续性
+            else {
                 if (this.lastSnapshotId.getIndex() >= this.firstLogIndex - 1
                     && this.lastSnapshotId.getIndex() <= this.lastLogIndex) {
                     return Status.OK();

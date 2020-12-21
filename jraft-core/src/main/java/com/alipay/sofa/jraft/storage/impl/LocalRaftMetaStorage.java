@@ -38,6 +38,12 @@ import com.alipay.sofa.jraft.storage.io.ProtoBufFile;
 import com.alipay.sofa.jraft.util.Utils;
 
 /**
+ * LocalRaftMetaStorage 在初始化时（即执行 LocalRaftMetaStorage#init 方法期间）
+ * 会从本地文件系统加载并反序列化元数据，以初始化 currentTerm 和 votedFor 属性值。
+ *
+ * 运行期间对于这两个属性值的更改全部记录在内存中，并在关闭时（即执行 LocalRaftMetaStorage#shutdown 方法期间）将内存中的数据序列化后落盘。
+ *
+ *
  * Raft meta storage,it's not thread-safe.
  *
  * @author boyan (boyan@alibaba-inc.com)

@@ -226,6 +226,8 @@ public class FSMCallerImpl implements FSMCaller {
         this.lastAppliedLogIndexListeners.add(listener);
     }
 
+    /**
+     */
     private boolean enqueueTask(final EventTranslator<ApplyTask> tpl) {
         if (this.shutdownLatch != null) {
             // Shutting down
@@ -240,6 +242,10 @@ public class FSMCallerImpl implements FSMCaller {
         return true;
     }
 
+    /**
+     *  用于往该 Disruptor 队列写入具体的状态机事件，
+     *  而 FSMCallerImpl 之于 FSMCaller 接口中声明的方法在实现层面基本上都是简单的调用此方法。
+     */
     @Override
     public boolean onCommitted(final long committedIndex) {
         return enqueueTask((task, sequence) -> {
