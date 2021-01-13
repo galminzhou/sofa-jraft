@@ -74,6 +74,8 @@ public class CounterClient {
         }
         latch.await();
         System.out.println(n + " ops, cost : " + (System.currentTimeMillis() - start) + " ms.");
+
+
         System.exit(0);
     }
 

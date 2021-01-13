@@ -16,6 +16,7 @@
  */
 package com.alipay.sofa.jraft.core;
 
+import com.alipay.sofa.jraft.rpc.RpcResponseClosure;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -247,6 +248,9 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
         }
     }
 
+    /**
+     * NodeImpl#init(opts)
+     */
     @Override
     public boolean init(final ReadOnlyServiceOptions opts) {
         this.node = opts.getNode();
@@ -308,6 +312,12 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
         this.scheduledExecutorService.awaitTermination(5, TimeUnit.SECONDS);
     }
 
+    /**
+     * Disruptor 队列
+     * 尝试将'读请求'发布到循环缓冲区 RingBuffer中，
+     * Disruptor 队列 事件处理器接收到 {@link ReadIndexEventHandler#onEvent(ReadIndexEvent, long, boolean)}
+     * 调用executeReadIndexEvents方法，构造 ReadIndex 请求并处理 {@link NodeImpl#handleReadIndexRequest(ReadIndexRequest, RpcResponseClosure)}
+     */
     @Override
     public void addRequest(final byte[] reqCtx, final ReadIndexClosure closure) {
         if (this.shutdownLatch != null) {

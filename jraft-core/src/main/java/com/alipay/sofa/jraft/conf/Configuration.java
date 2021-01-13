@@ -292,6 +292,9 @@ public class Configuration implements Iterable<PeerId>, Copiable<Configuration> 
         return sb.toString();
     }
 
+    /**
+     * 解析 Raft参与者列表（conf），以'/learner' 结尾是学习者
+     */
     public boolean parse(final String conf) {
         if (StringUtils.isBlank(conf)) {
             return false;

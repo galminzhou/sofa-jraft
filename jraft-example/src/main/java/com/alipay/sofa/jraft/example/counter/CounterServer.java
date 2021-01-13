@@ -101,10 +101,15 @@ public class CounterServer {
     }
 
     /**
-     * 示例（三个节点）
-     * /tmp/server1 counter 127.0.0.1:8081 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
-     * /tmp/server2 counter 127.0.0.1:8082 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
-     * /tmp/server3 counter 127.0.0.1:8083 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
+     * 示例（三个节点，不带优先级的）
+     * /tmp/server0_1 counter0 127.0.0.1:8081 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
+     * /tmp/server0_2 counter0 127.0.0.1:8082 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
+     * /tmp/server0_3 counter0 127.0.0.1:8083 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083
+     *
+     * 示例（三个节点，带优先级的）
+     * /tmp/server1_1 counter1 127.0.0.1:9081:0:200 127.0.0.1:9081:0:200,127.0.0.1:9082:0:100,127.0.0.1:9083:0:100
+     * /tmp/server1_2 counter1 127.0.0.1:9082:0:100 127.0.0.1:9081:0:200,127.0.0.1:9082:0:100,127.0.0.1:9083:0:100
+     * /tmp/server1_3 counter1 127.0.0.1:9083:0:100 127.0.0.1:9081:0:200,127.0.0.1:9082:0:100,127.0.0.1:9083:0:100
      *
      * @param args
      * @throws IOException
@@ -129,7 +134,7 @@ public class CounterServer {
         nodeOptions.setElectionTimeoutMs(1000);
         // 关闭 CLI 服务
         nodeOptions.setDisableCli(false);
-        // 每隔30秒做一次 snapshot
+        // 为了测试，每隔30秒做一次 snapshot
         nodeOptions.setSnapshotIntervalSecs(30);
         // 解析参数
         final PeerId serverId = new PeerId();

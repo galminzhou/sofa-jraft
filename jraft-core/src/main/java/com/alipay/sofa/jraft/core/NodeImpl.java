@@ -1549,11 +1549,11 @@ public class NodeImpl implements Node, RaftServerService {
             1）事务询问
                 协调者 向所有的 参与者 发送事务预处理请求，称之为Prepare，并开始等待各 参与者 的响应。
             2）执行本地事务
-                各个 参与者 节点执行本地事务操作,但在执行完成后并不会真正提交数据库本地事务，
-                而是先向 协调者 报告说：“我这边可以处理了/我这边不能处理”。.
+                各个 参与者 节点执行本地事务操作，但在执行完成后并不会真正提交数据库本地事务，
+                而是先向 协调者 报告说：“YES（我这边可以处理了）/NOC（我这边不能处理）”。
             3）各参与者向协调者反馈事务询问的响应
-                如果 参与者 成功执行了事务操作,那么就反馈给协调者 Yes 响应,表示事务可以执行,
-                如果没有 参与者 成功执行事务,那么就反馈给协调者 No 响应,表示事务不可以执行。
+                如果 参与者 成功执行了事务操作，那么就反馈给协调者 Yes 响应，表示事务可以执行；
+                如果没有 参与者 成功执行事务，那么就反馈给协调者 No 响应,表示事务不可以执行。
 
     ----第一阶段执行完后，存在两种可能。1、所有都返回Yes. 2、有一个或者多个返回No。----
 
@@ -1687,12 +1687,12 @@ public class NodeImpl implements Node, RaftServerService {
     }
 
     /**
-     * 默认情况下，SOFAJRaft 提供的线性一致读是基于 Raft 协议的 ReadIndex 实现，
+     * 默认情况下，SOFAJRaft 提供的线性一致读是基于 Raft 协议的 ReadIndex Read(RR) 实现，
      * 三副本的情况下 Leader 读的吞吐接近于 RPC 的吞吐上限，延迟取决于多数派中最慢的一个 Heartbeat Response。
      *
      * 使用 Node#readIndex(byte [] requestContext, ReadIndexClosure done) 发起线性一致读请求，
      * 当安全读取时传入的 Closure 将被调用，正常情况下从状态机中读取数据返回给客户端， SOFAJRaft 将保证读取的线性一致性。
-     * 线性一致读在任何集群内的节点发起，并不需要强制要求放到 Leader 节点上，允许在 Follower 节点执行，因此大大降低 Leader 的读取压力。
+     * 线性一致读在任何集群内的节点发起，并不需要强制要求放到 Leader 节点上，允许在 Follower 节点执行(默认Leader读)，因此大大降低 Leader 的读取压力。
      *
      * SOFAJRaft 基于 Raft 协议的 ReadIndex 线性一致读实现是调用
      * RaftServerService#handleReadIndexRequest 接口
@@ -1835,7 +1835,7 @@ public class NodeImpl implements Node, RaftServerService {
 
     /**
      * Handle read index request.
-     * 根据当前节点的角色（State）分而治之，
+     * Disruptor队列，ReadIndexEventHandle 处理请求，根据当前节点的角色（State）分而治之，
      * 1）对于 Follower 或 Learner 节点而言只是简单的将 ReadIndex 请求转发给 Leader 节点进行处理；
      * 2）不管当前 ReadIndex 请求是来自 Leader 节点还是 Follower 节点，最终都需要转发给 Leader 节点执行。
      */
